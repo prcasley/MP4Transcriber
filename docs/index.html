@@ -26,12 +26,6 @@
         }
         #app { position: relative; z-index: 1; }
 
-        .setup-banner {
-            background: rgba(20, 20, 30, 0.9);
-            border: 1px solid rgba(255,255,255,0.08);
-            border-radius: 12px;
-        }
-
         .custom-select {
             appearance: none;
             -webkit-appearance: none;
@@ -68,7 +62,6 @@
         }
         .drop-zone:hover { border-color: rgba(99, 102, 241, 0.4); background: rgba(99, 102, 241, 0.03); }
         .drop-zone.drag-over { border-color: #6366f1; background: rgba(99, 102, 241, 0.08); transform: scale(1.005); }
-        .drop-zone.disabled { opacity: 0.5; pointer-events: none; }
 
         .glass {
             background: rgba(20, 20, 30, 0.85);
@@ -115,6 +108,26 @@
         }
         .dismiss-link { color: #6366f1; text-decoration: underline; cursor: pointer; font-size: 13px; }
         .dismiss-link:hover { color: #818cf8; }
+
+        /* Mode toggle */
+        .mode-toggle { display: flex; background: #1a1a28; border-radius: 8px; border: 1px solid rgba(255,255,255,0.08); overflow: hidden; }
+        .mode-btn { padding: 8px 20px; font-size: 13px; font-weight: 600; cursor: pointer; border: none; background: transparent; color: #6b7280; transition: all 0.15s; }
+        .mode-btn.active { background: #6366f1; color: white; }
+        .mode-btn:hover:not(.active) { color: #d4d4d4; }
+
+        /* API key input */
+        .api-key-input {
+            background: #1a1a28;
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 8px;
+            padding: 10px 14px;
+            color: #e5e5e5;
+            font-size: 13px;
+            font-family: 'Courier New', monospace;
+            width: 100%;
+        }
+        .api-key-input:focus { outline: none; border-color: rgba(99, 102, 241, 0.5); }
+        .api-key-input::placeholder { color: #4b5563; }
     </style>
 </head>
 <body>
@@ -124,33 +137,49 @@
         <div class="mb-8">
             <h1 style="font-size: 32px; font-weight: 800; font-style: italic; color: #2dd4bf; margin: 0;">TranscribeHQ</h1>
             <p class="mt-2" style="color: #9ca3af; font-size: 15px;">
-                Drop your audio &amp; video files &mdash; get transcripts back. Powered by Whisper, runs 100% in your browser.
+                Drop your audio &amp; video files &mdash; get transcripts back. Powered by Whisper, handles files of any length.
             </p>
         </div>
 
-        <!-- Info Banner -->
-        <div id="info-banner" class="info-banner p-4 mb-8">
-            <div class="flex items-start gap-3">
-                <span style="font-size: 18px; line-height: 1;">&#9889;</span>
+        <!-- Mode Toggle -->
+        <div class="glass p-4 mb-5">
+            <div class="flex items-center justify-between">
                 <div>
-                    <p style="font-size: 13px; color: #c7d2fe; font-weight: 600; margin: 0 0 4px 0;">How it works</p>
-                    <p style="font-size: 13px; color: #9ca3af; margin: 0; line-height: 1.5;">
-                        Transcription runs entirely in your browser using AI. No files are uploaded to any server.<br>
-                        The first use downloads the model (~50-200MB, cached for next time). Larger files may take a few minutes.
-                    </p>
-                    <span class="dismiss-link mt-2 inline-block" onclick="document.getElementById('info-banner').style.display='none'; localStorage.setItem('thq_info_dismissed','1');">Got it</span>
+                    <div class="control-label mb-1">Processing Mode</div>
+                    <div class="mode-toggle">
+                        <button class="mode-btn active" id="mode-cloud" onclick="setMode('cloud')">Cloud (Fast)</button>
+                        <button class="mode-btn" id="mode-browser" onclick="setMode('browser')">Browser (Offline)</button>
+                    </div>
                 </div>
+                <div style="max-width: 340px;">
+                    <p id="mode-desc" style="font-size: 12px; color: #6b7280; line-height: 1.5; margin: 0;">
+                        Uses Groq Whisper API. Handles any file size, transcribes in seconds. Free API key included.
+                    </p>
+                </div>
+            </div>
+
+            <!-- API Key (cloud mode only) -->
+            <div id="api-key-section" class="mt-4" style="border-top: 1px solid rgba(255,255,255,0.06); padding-top: 12px;">
+                <div class="flex items-center gap-3">
+                    <div class="control-label" style="white-space: nowrap;">Groq API Key</div>
+                    <input type="password" id="api-key-input" class="api-key-input" placeholder="gsk_..." autocomplete="off">
+                    <button class="btn btn-outline" style="font-size:11px; white-space:nowrap;" onclick="toggleKeyVisibility()">Show</button>
+                </div>
+                <p style="font-size: 11px; color: #4b5563; margin: 6px 0 0 0;">
+                    Key is stored in your browser only. Get a free key at <a href="https://console.groq.com" target="_blank" style="color: #6366f1;">console.groq.com</a>
+                </p>
             </div>
         </div>
 
         <!-- Controls Row -->
         <div class="flex flex-wrap items-end gap-5 mb-6">
-            <div>
+            <div id="model-section">
                 <div class="control-label mb-1.5">Model</div>
                 <select id="model-select" class="custom-select">
-                    <option value="tiny">Tiny &mdash; fastest</option>
-                    <option value="base" selected>Base &mdash; recommended</option>
-                    <option value="small">Small &mdash; best accuracy</option>
+                    <!-- Cloud models -->
+                    <option value="whisper-large-v3-turbo" selected>Large v3 Turbo &mdash; best</option>
+                    <option value="whisper-large-v3">Large v3 &mdash; highest accuracy</option>
+                    <option value="distil-whisper-large-v3-en">Distil Large v3 &mdash; English only</option>
                 </select>
             </div>
             <div>
@@ -192,7 +221,7 @@
                 </svg>
             </div>
             <p style="font-size: 16px; font-weight: 600; color: #e5e5e5;">Drop files here or click to browse</p>
-            <p style="font-size: 13px; color: #6b7280; margin-top: 6px;">MP4, MP3, WAV, M4A, WEBM, OGG, FLAC &mdash; up to 2GB each</p>
+            <p style="font-size: 13px; color: #6b7280; margin-top: 6px;">MP4, MP3, WAV, M4A, WEBM, OGG, FLAC &mdash; any file size</p>
             <input type="file" id="file-input" class="hidden" multiple accept="audio/*,video/*,.mp4,.mp3,.wav,.m4a,.ogg,.flac,.webm,.avi,.mov,.mkv,.wma,.aac,.opus">
         </div>
 
@@ -214,18 +243,243 @@
 
     <script>
     // ── State ───────────────────────────────────────────────────
+    let currentMode = 'cloud'; // 'cloud' or 'browser'
     let worker = null;
-    let jobQueue = [];       // files waiting to be processed
-    let activeJobId = null;  // currently transcribing
+    let jobQueue = [];
+    let activeJobId = null;
     let jobCounter = 0;
-    const jobData = {};      // jobId -> { filename, model, status, ... }
+    const jobData = {};
 
-    // ── Info banner ─────────────────────────────────────────────
-    if (localStorage.getItem('thq_info_dismissed') === '1') {
-        document.getElementById('info-banner').style.display = 'none';
+    const GROQ_API = 'https://api.groq.com/openai/v1/audio/transcriptions';
+    const MAX_CHUNK_BYTES = 24 * 1024 * 1024; // 24MB to stay under Groq's 25MB limit
+
+    // ── Init ────────────────────────────────────────────────────
+    (function init() {
+        // Load saved API key
+        const savedKey = localStorage.getItem('thq_groq_key') || '';
+        document.getElementById('api-key-input').value = savedKey;
+
+        // Save key on change
+        document.getElementById('api-key-input').addEventListener('input', e => {
+            localStorage.setItem('thq_groq_key', e.target.value.trim());
+        });
+
+        // Load saved mode
+        const savedMode = localStorage.getItem('thq_mode') || 'cloud';
+        setMode(savedMode);
+    })();
+
+    function getApiKey() {
+        return (document.getElementById('api-key-input').value || '').trim();
     }
 
-    // ── Worker setup ────────────────────────────────────────────
+    function toggleKeyVisibility() {
+        const input = document.getElementById('api-key-input');
+        const btn = input.nextElementSibling;
+        if (input.type === 'password') { input.type = 'text'; btn.textContent = 'Hide'; }
+        else { input.type = 'password'; btn.textContent = 'Show'; }
+    }
+
+    // ── Mode toggle ─────────────────────────────────────────────
+    function setMode(mode) {
+        currentMode = mode;
+        localStorage.setItem('thq_mode', mode);
+
+        document.getElementById('mode-cloud').classList.toggle('active', mode === 'cloud');
+        document.getElementById('mode-browser').classList.toggle('active', mode === 'browser');
+        document.getElementById('api-key-section').style.display = mode === 'cloud' ? 'block' : 'none';
+
+        const modelSelect = document.getElementById('model-select');
+        const descEl = document.getElementById('mode-desc');
+
+        if (mode === 'cloud') {
+            modelSelect.innerHTML = `
+                <option value="whisper-large-v3-turbo" selected>Large v3 Turbo &mdash; best</option>
+                <option value="whisper-large-v3">Large v3 &mdash; highest accuracy</option>
+                <option value="distil-whisper-large-v3-en">Distil Large v3 &mdash; English only</option>
+            `;
+            descEl.textContent = 'Uses Groq Whisper API. Handles any file size, transcribes in seconds. Free API key included.';
+        } else {
+            modelSelect.innerHTML = `
+                <option value="tiny">Tiny &mdash; fastest</option>
+                <option value="base" selected>Base &mdash; recommended</option>
+                <option value="small">Small &mdash; best accuracy</option>
+            `;
+            descEl.textContent = 'Runs Whisper in your browser. No data leaves your machine. Best for files under 1-2 hours.';
+        }
+    }
+
+    // ── File handling ───────────────────────────────────────────
+    const dropZone = document.getElementById('drop-zone');
+    const fileInput = document.getElementById('file-input');
+
+    dropZone.addEventListener('click', () => fileInput.click());
+    dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+    dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+    dropZone.addEventListener('drop', e => {
+        e.preventDefault();
+        dropZone.classList.remove('drag-over');
+        handleFiles(e.dataTransfer.files);
+    });
+    fileInput.addEventListener('change', e => { handleFiles(e.target.files); fileInput.value = ''; });
+
+    function handleFiles(files) {
+        if (currentMode === 'cloud' && !getApiKey()) {
+            alert('Please enter your Groq API key first.\n\nGet a free one at console.groq.com');
+            return;
+        }
+        for (const file of files) queueFile(file);
+    }
+
+    function queueFile(file) {
+        const jobId = `job_${++jobCounter}`;
+        const model = document.getElementById('model-select').value;
+        const language = document.getElementById('language-select').value;
+
+        jobData[jobId] = { filename: file.name, model, language, file, status: 'queued', mode: currentMode };
+        addToQueueUI(jobId, file.name, model);
+        jobQueue.push(jobId);
+        processNext();
+    }
+
+    async function processNext() {
+        if (activeJobId || jobQueue.length === 0) return;
+        const jobId = jobQueue.shift();
+        activeJobId = jobId;
+        const job = jobData[jobId];
+
+        if (job.mode === 'cloud') {
+            await processCloud(jobId, job);
+        } else {
+            await processBrowser(jobId, job);
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // CLOUD MODE (Groq API)
+    // ═══════════════════════════════════════════════════════════
+
+    async function processCloud(jobId, job) {
+        const apiKey = getApiKey();
+        const file = job.file;
+        const fileSizeBytes = file.size;
+
+        try {
+            // Check if we need to chunk
+            if (fileSizeBytes <= MAX_CHUNK_BYTES) {
+                // Single request
+                updateJobUI(jobId, 'transcribing', 30, 'Sending to Groq...');
+                const result = await groqTranscribe(file, job.model, job.language, apiKey);
+                updateJobUI(jobId, 'transcribing', 90, 'Processing response...');
+                completeJob(jobId, buildResult(result, job.language));
+            } else {
+                // Multi-chunk
+                const totalChunks = Math.ceil(fileSizeBytes / MAX_CHUNK_BYTES);
+                updateJobUI(jobId, 'transcribing', 0, `Splitting into ${totalChunks} chunks...`);
+
+                const allSegments = [];
+                let fullText = '';
+                let detectedLang = job.language || 'auto';
+
+                for (let i = 0; i < totalChunks; i++) {
+                    const start = i * MAX_CHUNK_BYTES;
+                    const end = Math.min(start + MAX_CHUNK_BYTES, fileSizeBytes);
+                    const chunkBlob = file.slice(start, end);
+
+                    // Preserve original extension for Groq to recognize format
+                    const ext = file.name.split('.').pop() || 'mp4';
+                    const chunkFile = new File([chunkBlob], `chunk_${i}.${ext}`, { type: file.type });
+
+                    const pct = Math.round(((i) / totalChunks) * 100);
+                    updateJobUI(jobId, 'transcribing', pct, `Transcribing chunk ${i + 1}/${totalChunks}...`);
+
+                    const result = await groqTranscribe(chunkFile, job.model, job.language, apiKey);
+
+                    if (result.text) fullText += (fullText ? ' ' : '') + result.text.trim();
+                    if (result.segments) {
+                        result.segments.forEach(seg => {
+                            allSegments.push({
+                                index: allSegments.length + 1,
+                                start: seg.start,
+                                end: seg.end,
+                                text: seg.text,
+                            });
+                        });
+                    }
+                    if (result.language) detectedLang = result.language;
+                }
+
+                completeJob(jobId, buildResultFromParts(fullText, allSegments, detectedLang));
+            }
+        } catch (err) {
+            updateJobUI(jobId, 'error', 0, `Groq API error: ${err.message}`);
+            activeJobId = null;
+            processNext();
+        }
+    }
+
+    async function groqTranscribe(file, model, language, apiKey) {
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('model', model);
+        formData.append('response_format', 'verbose_json');
+        formData.append('temperature', '0');
+        if (language) formData.append('language', language);
+
+        const res = await fetch(GROQ_API, {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${apiKey}` },
+            body: formData,
+        });
+
+        if (!res.ok) {
+            const errBody = await res.text();
+            let msg = `HTTP ${res.status}`;
+            try { msg = JSON.parse(errBody).error?.message || msg; } catch {}
+            throw new Error(msg);
+        }
+
+        return await res.json();
+    }
+
+    function buildResult(groqResult, fallbackLang) {
+        const text = groqResult.text || '';
+        const segments = (groqResult.segments || []).map((s, i) => ({
+            index: i + 1,
+            start: s.start ?? 0,
+            end: s.end ?? 0,
+            text: (s.text || '').trim(),
+        }));
+        const lang = groqResult.language || fallbackLang || 'auto';
+        return buildResultFromParts(text, segments, lang);
+    }
+
+    function buildResultFromParts(text, segments, language) {
+        // Build SRT
+        const srt = segments.map((s, i) => {
+            const fmtTime = (sec) => {
+                const h = Math.floor(sec / 3600);
+                const m = Math.floor((sec % 3600) / 60);
+                const secs = Math.floor(sec % 60);
+                const ms = Math.round((sec % 1) * 1000);
+                return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(secs).padStart(2,'0')},${String(ms).padStart(3,'0')}`;
+            };
+            return `${i+1}\n${fmtTime(s.start)} --> ${fmtTime(s.end)}\n${s.text}\n`;
+        }).join('\n');
+
+        return {
+            text: text.trim(),
+            srt,
+            json: { segments },
+            segment_count: segments.length,
+            language,
+        };
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // BROWSER MODE (Web Worker + transformers.js)
+    // ═══════════════════════════════════════════════════════════
+
     function getWorker() {
         if (!worker) {
             worker = new Worker('worker.js', { type: 'module' });
@@ -245,12 +499,9 @@
     function handleWorkerMessage(e) {
         const msg = e.data;
         const jobId = msg.jobId;
-
         if (msg.type === 'status') {
-            const detail = msg.detail || (msg.status === 'loading_model' ? 'Loading AI model...' : 'Transcribing...');
-            updateJobUI(jobId, msg.status, msg.progress || 0, detail);
+            updateJobUI(jobId, msg.status, msg.progress || 0, msg.detail || '');
         } else if (msg.type === 'partial') {
-            // Live partial transcript — update the status text
             const statusEl = document.getElementById(`job-status-${jobId}`);
             if (statusEl) {
                 const preview = msg.text.length > 60 ? msg.text.substring(msg.text.length - 60) : msg.text;
@@ -265,76 +516,24 @@
         }
     }
 
-    // ── Audio extraction ────────────────────────────────────────
-    async function extractAudio(file) {
-        // Use Web Audio API to decode any audio/video file to raw PCM float32 at 16kHz
-        const arrayBuffer = await file.arrayBuffer();
-        const audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
-        const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
-        // Get mono channel
-        const float32 = audioBuffer.getChannelData(0);
-        audioCtx.close();
-        return float32;
-    }
-
-    // ── File handling ───────────────────────────────────────────
-    const dropZone = document.getElementById('drop-zone');
-    const fileInput = document.getElementById('file-input');
-
-    dropZone.addEventListener('click', () => fileInput.click());
-    dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
-    dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
-    dropZone.addEventListener('drop', e => {
-        e.preventDefault();
-        dropZone.classList.remove('drag-over');
-        handleFiles(e.dataTransfer.files);
-    });
-    fileInput.addEventListener('change', e => { handleFiles(e.target.files); fileInput.value = ''; });
-
-    function handleFiles(files) {
-        for (const file of files) {
-            queueFile(file);
-        }
-    }
-
-    function queueFile(file) {
-        const jobId = `job_${++jobCounter}`;
-        const model = document.getElementById('model-select').value;
-        const language = document.getElementById('language-select').value;
-
-        jobData[jobId] = { filename: file.name, model, language, file, status: 'queued' };
-
-        addToQueueUI(jobId, file.name, model);
-        jobQueue.push(jobId);
-        processNext();
-    }
-
-    async function processNext() {
-        if (activeJobId || jobQueue.length === 0) return;
-
-        const jobId = jobQueue.shift();
-        activeJobId = jobId;
-        const job = jobData[jobId];
-
+    async function processBrowser(jobId, job) {
         updateJobUI(jobId, 'extracting', 0, 'Extracting audio...');
-
         try {
-            // Extract audio from file
-            const audioData = await extractAudio(job.file);
-            // Free the file reference
+            const arrayBuffer = await job.file.arrayBuffer();
+            const audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+            const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+            const float32 = audioBuffer.getChannelData(0);
+            audioCtx.close();
             delete job.file;
 
             updateJobUI(jobId, 'loading_model', 0, 'Loading AI model...');
-
-            // Send to worker
             getWorker().postMessage({
                 type: 'transcribe',
-                audioData,
+                audioData: float32,
                 modelSize: job.model,
                 language: job.language || null,
                 jobId,
-            }, [audioData.buffer]); // Transfer buffer for performance
-
+            }, [float32.buffer]);
         } catch (err) {
             updateJobUI(jobId, 'error', 0, `Audio extraction failed: ${err.message}`);
             activeJobId = null;
@@ -342,18 +541,22 @@
         }
     }
 
+    // ═══════════════════════════════════════════════════════════
+    // SHARED UI
+    // ═══════════════════════════════════════════════════════════
+
     function completeJob(jobId, result) {
         activeJobId = null;
         jobData[jobId].result = result;
+        delete jobData[jobId].file;
         moveToCompleted(jobId, result);
         processNext();
     }
 
-    // ── Queue UI ────────────────────────────────────────────────
     function addToQueueUI(jobId, filename, model) {
         document.getElementById('queue-section').classList.remove('hidden');
         const list = document.getElementById('queue-list');
-
+        const modeLabel = jobData[jobId].mode === 'cloud' ? 'cloud' : 'browser';
         const el = document.createElement('div');
         el.id = `q-${jobId}`;
         el.className = 'glass p-4 fade-in';
@@ -368,7 +571,7 @@
                         <div style="font-size:14px;font-weight:500;color:white;" class="truncate">${esc(filename)}</div>
                         <div style="font-size:11px;color:#6b7280;" class="mt-0.5">
                             <span id="job-status-${jobId}">Queued</span>
-                            &middot; ${model}
+                            &middot; ${modeLabel} &middot; ${model}
                         </div>
                     </div>
                 </div>
@@ -386,29 +589,16 @@
         const statusEl = document.getElementById(`job-status-${jobId}`);
         const barEl = document.getElementById(`job-bar-${jobId}`);
         const pctEl = document.getElementById(`job-pct-${jobId}`);
-
         if (!statusEl) return;
 
-        const labels = {
-            queued: 'Queued',
-            extracting: 'Extracting audio...',
-            loading_model: 'Loading AI model...',
-            transcribing: 'Transcribing...',
-            error: 'Error',
-        };
-
+        const labels = { queued: 'Queued', extracting: 'Extracting audio...', loading_model: 'Loading AI model...', transcribing: 'Transcribing...', error: 'Error' };
         statusEl.textContent = detail || labels[status] || status;
         if (status === 'loading_model' || status === 'extracting') statusEl.classList.add('pulse');
         else statusEl.classList.remove('pulse');
         if (status === 'error') statusEl.style.color = '#fca5a5';
-
         if (barEl) barEl.style.width = `${progress}%`;
-        if (pctEl) pctEl.textContent = status === 'loading_model' ? `${progress}%` : '';
-
-        if (status === 'error' && barEl) {
-            barEl.style.background = '#ef4444';
-            barEl.style.width = '100%';
-        }
+        if (pctEl) pctEl.textContent = progress > 0 ? `${progress}%` : '';
+        if (status === 'error' && barEl) { barEl.style.background = '#ef4444'; barEl.style.width = '100%'; }
     }
 
     function updateQueueCount() {
@@ -416,22 +606,20 @@
         document.getElementById('queue-count').textContent = `${n} file${n !== 1 ? 's' : ''}`;
     }
 
-    // ── Completed UI ────────────────────────────────────────────
     function moveToCompleted(jobId, result) {
         const qEl = document.getElementById(`q-${jobId}`);
         if (qEl) qEl.remove();
         updateQueueCount();
-        if (!document.getElementById('queue-list').children.length) {
+        if (!document.getElementById('queue-list').children.length)
             document.getElementById('queue-section').classList.add('hidden');
-        }
 
         document.getElementById('completed-section').classList.remove('hidden');
         const list = document.getElementById('completed-list');
         const job = jobData[jobId];
         const r = result;
-
         const srt = r.srt || '';
-        const segmentsJson = JSON.stringify(r.json?.segments || [], null, 2);
+        const segJson = JSON.stringify(r.json?.segments || [], null, 2);
+        const modeLabel = job.mode === 'cloud' ? 'cloud' : 'browser';
 
         const el = document.createElement('div');
         el.className = 'glass p-5 fade-in';
@@ -442,6 +630,7 @@
                     <div class="flex flex-wrap gap-2 mt-1.5">
                         <span class="badge badge-green">${r.segment_count} segments</span>
                         <span class="badge badge-yellow">Lang: ${r.language}</span>
+                        <span class="badge badge-blue">${modeLabel}</span>
                         <span class="badge badge-gray">${job.model}</span>
                     </div>
                 </div>
@@ -461,14 +650,13 @@
             </div>
             <div class="hidden" id="dt-text-${jobId}">${esc(r.text)}</div>
             <div class="hidden" id="dt-srt-${jobId}">${esc(srt)}</div>
-            <div class="hidden" id="dt-segments-${jobId}">${esc(segmentsJson)}</div>
+            <div class="hidden" id="dt-segments-${jobId}">${esc(segJson)}</div>
             <div class="flex items-center justify-end mt-3 pt-3" style="border-top:1px solid rgba(255,255,255,0.06);">
                 <button class="btn btn-outline" style="font-size:12px;" onclick="copyTx('${jobId}')">Copy to clipboard</button>
             </div>
         `;
         list.prepend(el);
 
-        // Tab switching
         el.querySelectorAll('.tab').forEach(tab => {
             tab.addEventListener('click', () => {
                 el.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
@@ -491,22 +679,14 @@
         if (!job || !job.result) return;
         const r = job.result;
         const stem = job.filename.replace(/\.[^.]+$/, '');
-
         let content, mime, ext;
-        if (fmt === 'txt') {
-            content = r.text; mime = 'text/plain'; ext = 'txt';
-        } else if (fmt === 'srt') {
-            content = r.srt; mime = 'text/plain'; ext = 'srt';
-        } else {
-            content = JSON.stringify(r.json, null, 2); mime = 'application/json'; ext = 'json';
-        }
-
+        if (fmt === 'txt') { content = r.text; mime = 'text/plain'; ext = 'txt'; }
+        else if (fmt === 'srt') { content = r.srt; mime = 'text/plain'; ext = 'srt'; }
+        else { content = JSON.stringify(r.json, null, 2); mime = 'application/json'; ext = 'json'; }
         const blob = new Blob([content], { type: mime });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
-        a.href = url;
-        a.download = `${stem}.${ext}`;
-        a.click();
+        a.href = url; a.download = `${stem}.${ext}`; a.click();
         URL.revokeObjectURL(url);
     }
 
@@ -514,9 +694,7 @@
         const el = document.getElementById(`tx-${jobId}`);
         navigator.clipboard.writeText(el.textContent).then(() => {
             const btn = el.closest('.glass').querySelector('[onclick*="copyTx"]');
-            const o = btn.textContent;
-            btn.textContent = 'Copied!';
-            setTimeout(() => btn.textContent = o, 1500);
+            const o = btn.textContent; btn.textContent = 'Copied!'; setTimeout(() => btn.textContent = o, 1500);
         });
     }
     </script>
