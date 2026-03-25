@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TranscribeHQ</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+        body { font-family: 'Inter', system-ui, sans-serif; background: #0a0a0a; color: #e5e5e5; }
+        .glass { background: rgba(23, 23, 23, 0.8); backdrop-filter: blur(12px); border: 1px solid rgba(255,255,255,0.06); }
+        .drop-zone { border: 2px dashed rgba(99, 102, 241, 0.3); transition: all 0.2s; }
+        .drop-zone.drag-over { border-color: #6366f1; background: rgba(99, 102, 241, 0.08); transform: scale(1.01); }
+        .drop-zone:hover { border-color: rgba(99, 102, 241, 0.5); }
+        .progress-ring { transform: rotate(-90deg); }
+        .transcript-box { background: #111; border: 1px solid #222; border-radius: 10px; max-height: 400px; overflow-y: auto; }
+        .transcript-box::-webkit-scrollbar { width: 6px; }
+        .transcript-box::-webkit-scrollbar-thumb { background: #333; border-radius: 3px; }
+        .model-card { cursor: pointer; transition: all 0.15s; border: 2px solid transparent; }
+        .model-card:hover { border-color: rgba(99, 102, 241, 0.3); }
+        .model-card.selected { border-color: #6366f1; background: rgba(99, 102, 241, 0.1); }
+        .btn { padding: 8px 18px; border-radius: 8px; font-weight: 500; font-size: 13px; cursor: pointer; transition: all 0.15s; }
+        .btn-primary { background: #6366f1; color: white; border: none; }
+        .btn-primary:hover { background: #5457e5; }
+        .btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
+        .btn-outline { background: transparent; color: #a5a5a5; border: 1px solid #333; }
+        .btn-outline:hover { background: #1a1a1a; color: white; }
+        .badge { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 6px; font-size: 11px; font-weight: 600; }
+        .badge-blue { background: #1e1b4b; color: #a5b4fc; }
+        .badge-green { background: #052e16; color: #86efac; }
+        .badge-yellow { background: #422006; color: #fde68a; }
+        .badge-red { background: #450a0a; color: #fca5a5; }
+        .badge-gray { background: #1a1a1a; color: #737373; }
+        .job-card { transition: all 0.2s; }
+        .job-card:hover { background: rgba(255,255,255,0.02); }
+        .tab { padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 500; color: #737373; transition: all 0.15s; }
+        .tab:hover { color: #d4d4d4; }
+        .tab.active { background: #262626; color: white; }
+        .fade-in { animation: fadeIn 0.3s ease; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; } }
+        .pulse { animation: pulse 2s infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+    </style>
+</head>
+<body class="min-h-screen">
+    <div class="max-w-5xl mx-auto px-4 py-8" id="app">
+        <!-- Header -->
+        <div class="flex items-center justify-between mb-8">
+            <div>
+                <h1 class="text-2xl font-bold text-white tracking-tight">TranscribeHQ</h1>
+                <p class="text-sm text-neutral-500 mt-0.5">Local audio/video transcription powered by Whisper</p>
+            </div>
+            <div class="flex items-center gap-3">
+                <div id="server-status" class="flex items-center gap-1.5 text-xs">
+                    <span class="w-2 h-2 rounded-full bg-red-500"></span>
+                    <span class="text-neutral-500">Checking server...</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Model Selection -->
+        <div class="glass rounded-xl p-5 mb-5">
+            <div class="flex items-center justify-between mb-3">
+                <h3 class="text-sm font-semibold text-neutral-300">Model</h3>
+                <span class="text-xs text-neutral-500">Larger models = better accuracy, slower speed</span>
+            </div>
+            <div class="grid grid-cols-2 md:grid-cols-5 gap-2" id="model-grid"></div>
+        </div>
+
+        <!-- Upload Zone -->
+        <div class="glass rounded-xl p-8 mb-5">
+            <div id="drop-zone" class="drop-zone rounded-xl p-10 text-center cursor-pointer">
+                <div class="mb-3">
+                    <svg class="w-12 h-12 mx-auto text-indigo-400 opacity-60" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>
+                    </svg>
+                </div>
+                <p class="text-neutral-300 font-medium">Drop audio/video files here</p>
+                <p class="text-neutral-500 text-sm mt-1">or click to browse &mdash; MP4, MP3, WAV, M4A, MOV, MKV, and more</p>
+                <input type="file" id="file-input" class="hidden" multiple accept="audio/*,video/*,.mp4,.mp3,.wav,.m4a,.ogg,.flac,.webm,.avi,.mov,.mkv,.wma,.aac,.opus">
+            </div>
+        </div>
+
+        <!-- Queue -->
+        <div id="queue-section" class="hidden mb-5">
+            <div class="flex items-center justify-between mb-3">
+                <h3 class="text-sm font-semibold text-neutral-300">Queue</h3>
+                <span class="text-xs text-neutral-500" id="queue-count"></span>
+            </div>
+            <div id="queue-list" class="space-y-2"></div>
+        </div>
+
+        <!-- Completed Jobs -->
+        <div id="completed-section" class="hidden">
+            <h3 class="text-sm font-semibold text-neutral-300 mb-3">Completed Transcriptions</h3>
+            <div id="completed-list" class="space-y-3"></div>
+        </div>
+    </div>
+
+    <script>
+    const API = 'http://localhost:5000/api';
+    let selectedModel = 'base';
+    let pollingIntervals = {};
+
+    // ── Server check ────────────────────────────────────────────
+    async function checkServer() {
+        const el = document.getElementById('server-status');
+        try {
+            const res = await fetch(`${API}/models`);
+            if (res.ok) {
+                el.innerHTML = '<span class="w-2 h-2 rounded-full bg-green-500"></span><span class="text-neutral-400">Server connected</span>';
+                return true;
+            }
+        } catch {}
+        el.innerHTML = '<span class="w-2 h-2 rounded-full bg-red-500"></span><span class="text-red-400">Server offline</span>';
+        return false;
+    }
+
+    // ── Models ──────────────────────────────────────────────────
+    const defaultModels = [
+        { id: 'tiny', name: 'Tiny', desc: 'Fastest, lowest accuracy', size: '~75 MB' },
+        { id: 'base', name: 'Base', desc: 'Fast, decent accuracy', size: '~140 MB' },
+        { id: 'small', name: 'Small', desc: 'Good balance', size: '~460 MB' },
+        { id: 'medium', name: 'Medium', desc: 'Best for old recordings', size: '~1.5 GB' },
+        { id: 'large-v3', name: 'Large v3', desc: 'Best accuracy', size: '~3 GB' },
+    ];
+
+    function renderModels(models) {
+        const grid = document.getElementById('model-grid');
+        grid.innerHTML = (models || defaultModels).map(m => `
+            <div class="model-card glass rounded-lg p-3 ${m.id === selectedModel ? 'selected' : ''}" data-model="${m.id}">
+                <div class="text-sm font-semibold text-white">${m.name}</div>
+                <div class="text-xs text-neutral-500 mt-0.5">${m.desc}</div>
+                <div class="text-xs text-neutral-600 mt-1">${m.size}</div>
+            </div>
+        `).join('');
+
+        grid.querySelectorAll('.model-card').forEach(card => {
+            card.addEventListener('click', () => {
+                selectedModel = card.dataset.model;
+                grid.querySelectorAll('.model-card').forEach(c => c.classList.remove('selected'));
+                card.classList.add('selected');
+            });
+        });
+    }
+
+    async function loadModels() {
+        try {
+            const res = await fetch(`${API}/models`);
+            const models = await res.json();
+            renderModels(models);
+        } catch {
+            renderModels(defaultModels);
+        }
+    }
+
+    // ── File upload ─────────────────────────────────────────────
+    const dropZone = document.getElementById('drop-zone');
+    const fileInput = document.getElementById('file-input');
+
+    dropZone.addEventListener('click', () => fileInput.click());
+
+    dropZone.addEventListener('dragover', e => {
+        e.preventDefault();
+        dropZone.classList.add('drag-over');
+    });
+    dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+    dropZone.addEventListener('drop', e => {
+        e.preventDefault();
+        dropZone.classList.remove('drag-over');
+        handleFiles(e.dataTransfer.files);
+    });
+    fileInput.addEventListener('change', e => handleFiles(e.target.files));
+
+    async function handleFiles(files) {
+        const online = await checkServer();
+        if (!online) {
+            alert('Server is not running. Start it with:\n\npython transcribe_server.py');
+            return;
+        }
+
+        for (const file of files) {
+            uploadFile(file);
+        }
+    }
+
+    async function uploadFile(file) {
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('model', selectedModel);
+
+        try {
+            const res = await fetch(`${API}/upload`, { method: 'POST', body: formData });
+            const data = await res.json();
+            if (data.error) {
+                alert(`Error: ${data.error}`);
+                return;
+            }
+            addToQueue(data.job_id, file.name);
+            pollJob(data.job_id);
+        } catch (e) {
+            alert(`Upload failed: ${e.message}`);
+        }
+    }
+
+    // ── Queue ───────────────────────────────────────────────────
+    function addToQueue(jobId, filename) {
+        const section = document.getElementById('queue-section');
+        const list = document.getElementById('queue-list');
+        section.classList.remove('hidden');
+
+        const el = document.createElement('div');
+        el.id = `job-${jobId}`;
+        el.className = 'glass rounded-lg p-4 job-card fade-in';
+        el.innerHTML = `
+            <div class="flex items-center justify-between">
+                <div class="flex items-center gap-3 min-w-0">
+                    <div class="w-8 h-8 rounded-lg bg-indigo-500/10 flex items-center justify-center flex-shrink-0">
+                        <svg class="w-4 h-4 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3"/>
+                        </svg>
+                    </div>
+                    <div class="min-w-0">
+                        <div class="text-sm font-medium text-white truncate">${filename}</div>
+                        <div class="text-xs text-neutral-500 mt-0.5" id="job-status-${jobId}">Queued...</div>
+                    </div>
+                </div>
+                <div class="flex items-center gap-3">
+                    <div class="text-xs text-neutral-500" id="job-progress-text-${jobId}">0%</div>
+                    <div class="w-24 h-1.5 rounded-full bg-neutral-800 overflow-hidden">
+                        <div class="h-full rounded-full bg-indigo-500 transition-all duration-300" id="job-progress-${jobId}" style="width:0%"></div>
+                    </div>
+                </div>
+            </div>
+        `;
+        list.prepend(el);
+        updateQueueCount();
+    }
+
+    function updateQueueCount() {
+        const count = document.getElementById('queue-list').children.length;
+        document.getElementById('queue-count').textContent = `${count} job${count !== 1 ? 's' : ''}`;
+    }
+
+    // ── Polling ─────────────────────────────────────────────────
+    function pollJob(jobId) {
+        pollingIntervals[jobId] = setInterval(async () => {
+            try {
+                const res = await fetch(`${API}/status/${jobId}`);
+                const job = await res.json();
+
+                const statusEl = document.getElementById(`job-status-${jobId}`);
+                const progressEl = document.getElementById(`job-progress-${jobId}`);
+                const progressText = document.getElementById(`job-progress-text-${jobId}`);
+
+                if (!statusEl) { clearInterval(pollingIntervals[jobId]); return; }
+
+                const statusLabels = {
+                    queued: 'Queued...',
+                    loading_model: 'Loading model...',
+                    transcribing: 'Transcribing...',
+                    completed: 'Completed',
+                    error: 'Error',
+                };
+
+                statusEl.textContent = statusLabels[job.status] || job.status;
+                if (progressEl) progressEl.style.width = `${job.progress}%`;
+                if (progressText) progressText.textContent = `${job.progress}%`;
+
+                if (job.status === 'loading_model') {
+                    statusEl.classList.add('pulse');
+                } else {
+                    statusEl.classList.remove('pulse');
+                }
+
+                if (job.status === 'completed') {
+                    clearInterval(pollingIntervals[jobId]);
+                    moveToCompleted(jobId, job);
+                } else if (job.status === 'error') {
+                    clearInterval(pollingIntervals[jobId]);
+                    statusEl.innerHTML = `<span class="text-red-400">Error: ${job.error}</span>`;
+                    if (progressEl) { progressEl.style.width = '100%'; progressEl.classList.replace('bg-indigo-500', 'bg-red-500'); }
+                }
+            } catch {
+                // Server might be temporarily unavailable
+            }
+        }, 800);
+    }
+
+    // ── Completed ───────────────────────────────────────────────
+    function moveToCompleted(jobId, job) {
+        // Remove from queue
+        const queueEl = document.getElementById(`job-${jobId}`);
+        if (queueEl) queueEl.remove();
+        updateQueueCount();
+        if (document.getElementById('queue-list').children.length === 0) {
+            document.getElementById('queue-section').classList.add('hidden');
+        }
+
+        const section = document.getElementById('completed-section');
+        const list = document.getElementById('completed-list');
+        section.classList.remove('hidden');
+
+        const r = job.result;
+        const el = document.createElement('div');
+        el.className = 'glass rounded-xl p-5 fade-in';
+        el.innerHTML = `
+            <div class="flex items-center justify-between mb-4">
+                <div>
+                    <div class="text-sm font-semibold text-white">${job.filename}</div>
+                    <div class="flex gap-2 mt-1">
+                        <span class="badge badge-green">${r.segment_count} segments</span>
+                        <span class="badge badge-blue">${formatDuration(r.duration)}</span>
+                        <span class="badge badge-yellow">Language: ${r.language}</span>
+                        <span class="badge badge-gray">Model: ${job.model}</span>
+                    </div>
+                </div>
+                <div class="flex gap-2">
+                    <button class="btn btn-outline text-xs" onclick="downloadTranscript('${jobId}', 'txt')">TXT</button>
+                    <button class="btn btn-outline text-xs" onclick="downloadTranscript('${jobId}', 'srt')">SRT</button>
+                    <button class="btn btn-outline text-xs" onclick="downloadTranscript('${jobId}', 'json')">JSON</button>
+                </div>
+            </div>
+
+            <!-- Transcript tabs -->
+            <div class="flex gap-1 mb-3">
+                <div class="tab active" data-format="text" data-job="${jobId}">Plain Text</div>
+                <div class="tab" data-format="srt" data-job="${jobId}">SRT</div>
+                <div class="tab" data-format="segments" data-job="${jobId}">Segments</div>
+            </div>
+
+            <div class="transcript-box p-4 text-sm" id="transcript-${jobId}">
+                <div class="text-neutral-300 whitespace-pre-wrap leading-relaxed">${escapeHtml(r.text)}</div>
+            </div>
+
+            <!-- Hidden data -->
+            <div class="hidden" id="data-text-${jobId}">${escapeHtml(r.text)}</div>
+            <div class="hidden" id="data-srt-${jobId}">${escapeHtml(r.srt)}</div>
+            <div class="hidden" id="data-segments-${jobId}">${escapeHtml(JSON.stringify(r.json.segments, null, 2))}</div>
+
+            <div class="flex items-center justify-between mt-3 pt-3 border-t border-neutral-800">
+                <span class="text-xs text-neutral-500">Auto-saved to: ${r.output_dir}</span>
+                <button class="btn btn-outline text-xs" onclick="copyTranscript('${jobId}')">Copy to clipboard</button>
+            </div>
+        `;
+        list.prepend(el);
+
+        // Tab switching
+        el.querySelectorAll('.tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                el.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+                tab.classList.add('active');
+                const format = tab.dataset.format;
+                const box = document.getElementById(`transcript-${jobId}`);
+                const content = document.getElementById(`data-${format}-${jobId}`).textContent;
+                if (format === 'segments') {
+                    box.innerHTML = `<pre class="text-neutral-300 text-xs leading-relaxed">${content}</pre>`;
+                } else {
+                    box.innerHTML = `<div class="text-neutral-300 whitespace-pre-wrap leading-relaxed">${content}</div>`;
+                }
+            });
+        });
+    }
+
+    function formatDuration(seconds) {
+        const m = Math.floor(seconds / 60);
+        const s = Math.round(seconds % 60);
+        return m > 0 ? `${m}m ${s}s` : `${s}s`;
+    }
+
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    function downloadTranscript(jobId, format) {
+        window.open(`${API}/download/${jobId}/${format}`);
+    }
+
+    function copyTranscript(jobId) {
+        const el = document.getElementById(`transcript-${jobId}`);
+        navigator.clipboard.writeText(el.textContent).then(() => {
+            // Brief visual feedback
+            const btn = el.closest('.glass').querySelector('[onclick*="copyTranscript"]');
+            const orig = btn.textContent;
+            btn.textContent = 'Copied!';
+            setTimeout(() => btn.textContent = orig, 1500);
+        });
+    }
+
+    // ── Init ────────────────────────────────────────────────────
+    checkServer();
+    loadModels();
+    setInterval(checkServer, 10000);
+    </script>
+</body>
+</html>

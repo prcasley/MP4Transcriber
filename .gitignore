@@ -1,0 +1,8 @@
+uploads/
+transcripts_output/
+__pycache__/
+*.pyc
+.env
+venv/
+.venv/
+nul
