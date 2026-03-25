@@ -255,9 +255,14 @@
 
     // ── Init ────────────────────────────────────────────────────
     (function init() {
-        // Load saved API key
-        const savedKey = localStorage.getItem('thq_groq_key') || '';
+        // Load saved API key (injected by GitHub Actions or manually entered)
+        const DEFAULT_KEY = '__GROQ_API_KEY__';
+        const injectedKey = DEFAULT_KEY.startsWith('__') ? '' : DEFAULT_KEY;
+        const savedKey = localStorage.getItem('thq_groq_key') || injectedKey;
         document.getElementById('api-key-input').value = savedKey;
+        if (injectedKey && !localStorage.getItem('thq_groq_key')) {
+            localStorage.setItem('thq_groq_key', injectedKey);
+        }
 
         // Save key on change
         document.getElementById('api-key-input').addEventListener('input', e => {
