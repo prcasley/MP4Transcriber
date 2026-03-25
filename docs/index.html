@@ -158,16 +158,21 @@
                 </div>
             </div>
 
-            <!-- API Key (cloud mode only) -->
+            <!-- API Key (cloud mode only, hidden when pre-configured) -->
             <div id="api-key-section" class="mt-4" style="border-top: 1px solid rgba(255,255,255,0.06); padding-top: 12px;">
-                <div class="flex items-center gap-3">
-                    <div class="control-label" style="white-space: nowrap;">Groq API Key</div>
-                    <input type="password" id="api-key-input" class="api-key-input" placeholder="gsk_..." autocomplete="off">
-                    <button class="btn btn-outline" style="font-size:11px; white-space:nowrap;" onclick="toggleKeyVisibility()">Show</button>
+                <div id="api-key-configured" class="hidden" style="font-size: 12px; color: #6b7280;">
+                    <span style="color: #86efac;">&#10003;</span> API key configured. <span class="dismiss-link" onclick="showKeyInput()">Change key</span>
                 </div>
-                <p style="font-size: 11px; color: #4b5563; margin: 6px 0 0 0;">
-                    Key is stored in your browser only. Get a free key at <a href="https://console.groq.com" target="_blank" style="color: #6366f1;">console.groq.com</a>
-                </p>
+                <div id="api-key-form" class="hidden">
+                    <div class="flex items-center gap-3">
+                        <div class="control-label" style="white-space: nowrap;">Groq API Key</div>
+                        <input type="password" id="api-key-input" class="api-key-input" placeholder="gsk_..." autocomplete="off">
+                        <button class="btn btn-outline" style="font-size:11px; white-space:nowrap;" onclick="toggleKeyVisibility()">Show</button>
+                    </div>
+                    <p style="font-size: 11px; color: #4b5563; margin: 6px 0 0 0;">
+                        Key is stored in your browser only. Get a free key at <a href="https://console.groq.com" target="_blank" style="color: #6366f1;">console.groq.com</a>
+                    </p>
+                </div>
             </div>
         </div>
 
@@ -263,10 +268,13 @@
         if (injectedKey && !localStorage.getItem('thq_groq_key')) {
             localStorage.setItem('thq_groq_key', injectedKey);
         }
+        // Show/hide key UI based on whether key exists
+        updateKeyUI();
 
         // Save key on change
         document.getElementById('api-key-input').addEventListener('input', e => {
             localStorage.setItem('thq_groq_key', e.target.value.trim());
+            updateKeyUI();
         });
 
         // Load saved mode
@@ -276,6 +284,17 @@
 
     function getApiKey() {
         return (document.getElementById('api-key-input').value || '').trim();
+    }
+
+    function updateKeyUI() {
+        const hasKey = !!getApiKey();
+        document.getElementById('api-key-configured').classList.toggle('hidden', !hasKey);
+        document.getElementById('api-key-form').classList.toggle('hidden', hasKey);
+    }
+
+    function showKeyInput() {
+        document.getElementById('api-key-configured').classList.add('hidden');
+        document.getElementById('api-key-form').classList.remove('hidden');
     }
 
     function toggleKeyVisibility() {
