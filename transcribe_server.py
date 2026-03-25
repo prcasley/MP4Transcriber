@@ -302,5 +302,5 @@ def list_models():
 
 if __name__ == "__main__":
     print("\n  TranscribeHQ Server")
-    print("  Open http://localhost:5000 in your browser\n")
-    app.run(host="0.0.0.0", port=5000, debug=False, threaded=True)
+    print("  Open http://localhost:5111 in your browser\n")
+    app.run(host="0.0.0.0", port=5111, debug=False, threaded=True)

@@ -9,7 +9,9 @@ pip install -r requirements.txt
 python transcribe_server.py
 ```
 
-Open **http://localhost:5000** in your browser.
+Then open the UI at **https://prcasley.github.io/MP4Transcriber** (or http://localhost:5111).
+
+The frontend is hosted on GitHub Pages and connects to your local backend on port 5111.
 
 ## Features
 
