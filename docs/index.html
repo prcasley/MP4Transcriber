@@ -84,10 +84,14 @@
         .badge-blue { background: #1e1b4b; color: #a5b4fc; }
         .badge-yellow { background: #422006; color: #fde68a; }
         .badge-gray { background: #1f1f2e; color: #9ca3af; }
+        .badge-teal { background: #042f2e; color: #5eead4; }
 
         .btn { padding: 8px 18px; border-radius: 8px; font-weight: 500; font-size: 13px; cursor: pointer; transition: all 0.15s; border: none; }
         .btn-outline { background: transparent; color: #a5a5a5; border: 1px solid #333; }
         .btn-outline:hover { background: #1a1a28; color: white; }
+        .btn-ai { background: rgba(99, 102, 241, 0.12); color: #a5b4fc; border: 1px solid rgba(99, 102, 241, 0.25); }
+        .btn-ai:hover { background: rgba(99, 102, 241, 0.2); color: #c7d2fe; }
+        .btn-ai:disabled { opacity: 0.4; cursor: not-allowed; }
 
         .tab { padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 500; color: #737373; transition: all 0.15s; }
         .tab:hover { color: #d4d4d4; }
@@ -101,34 +105,64 @@
         .progress-bar-bg { height: 6px; border-radius: 3px; background: #1f1f2e; overflow: hidden; }
         .progress-bar-fill { height: 100%; border-radius: 3px; background: linear-gradient(90deg, #6366f1, #8b5cf6); transition: width 0.3s ease; }
 
-        .info-banner {
-            background: rgba(99, 102, 241, 0.06);
-            border: 1px solid rgba(99, 102, 241, 0.15);
-            border-radius: 10px;
-        }
-        .dismiss-link { color: #6366f1; text-decoration: underline; cursor: pointer; font-size: 13px; }
-        .dismiss-link:hover { color: #818cf8; }
-
         /* Mode toggle */
         .mode-toggle { display: flex; background: #1a1a28; border-radius: 8px; border: 1px solid rgba(255,255,255,0.08); overflow: hidden; }
         .mode-btn { padding: 8px 20px; font-size: 13px; font-weight: 600; cursor: pointer; border: none; background: transparent; color: #6b7280; transition: all 0.15s; }
         .mode-btn.active { background: #6366f1; color: white; }
         .mode-btn:hover:not(.active) { color: #d4d4d4; }
 
+        /* API key input */
+        .api-key-input {
+            background: #0e0e18;
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 8px;
+            padding: 9px 14px;
+            color: #e5e5e5;
+            font-size: 13px;
+            width: 100%;
+            font-family: monospace;
+        }
+        .api-key-input:focus { outline: none; border-color: rgba(99, 102, 241, 0.5); }
+        .api-key-input::placeholder { color: #4b5563; }
+
+        /* AI result box */
+        .ai-result-box {
+            background: rgba(99, 102, 241, 0.04);
+            border: 1px solid rgba(99, 102, 241, 0.15);
+            border-radius: 10px;
+            padding: 14px 16px;
+            font-size: 13px;
+            color: #c7d2fe;
+            line-height: 1.7;
+            white-space: pre-wrap;
+        }
+        .ai-result-box.loading { color: #6b7280; }
+
+        /* Warning banner */
+        .warn-banner {
+            background: rgba(251, 191, 36, 0.06);
+            border: 1px solid rgba(251, 191, 36, 0.2);
+            border-radius: 8px;
+            padding: 8px 14px;
+            font-size: 12px;
+            color: #fde68a;
+        }
     </style>
 </head>
 <body>
     <div class="max-w-3xl mx-auto px-6 py-10" id="app">
 
         <!-- Header -->
-        <div class="mb-8">
-            <h1 style="font-size: 32px; font-weight: 800; font-style: italic; color: #2dd4bf; margin: 0;">TranscribeHQ</h1>
-            <p class="mt-2" style="color: #9ca3af; font-size: 15px;">
-                Drop your audio &amp; video files &mdash; get transcripts back. Powered by Whisper, handles files of any length.
-            </p>
+        <div class="mb-8 flex items-start justify-between">
+            <div>
+                <h1 style="font-size: 32px; font-weight: 800; font-style: italic; color: #2dd4bf; margin: 0;">TranscribeHQ</h1>
+                <p class="mt-2" style="color: #9ca3af; font-size: 15px;">
+                    Drop your audio &amp; video files &mdash; get transcripts back. Powered by Whisper, handles files of any length.
+                </p>
+            </div>
         </div>
 
-        <!-- Mode Toggle -->
+        <!-- Mode Toggle + Settings -->
         <div class="glass p-4 mb-5">
             <div class="flex items-center justify-between">
                 <div>
@@ -139,25 +173,31 @@
                     </div>
                 </div>
                 <div style="max-width: 340px;">
-                    <p id="mode-desc" style="font-size: 12px; color: #6b7280; line-height: 1.5; margin: 0;">
-                        Uses Groq Whisper API. Handles any file size, transcribes in seconds. Free API key included.
-                    </p>
+                    <p id="mode-desc" style="font-size: 12px; color: #6b7280; line-height: 1.5; margin: 0;"></p>
                 </div>
             </div>
 
-            <input type="hidden" id="api-key-input" value="">
+            <!-- Groq API Key (cloud mode) -->
+            <div id="api-key-section" class="mt-4">
+                <div class="control-label mb-1.5">Groq API Key
+                    <span style="font-size:10px;font-weight:400;color:#4b5563;text-transform:none;letter-spacing:0;margin-left:6px;">
+                        Saved in browser &mdash; never sent anywhere except Groq
+                    </span>
+                </div>
+                <div class="flex gap-2 items-center">
+                    <input type="password" id="api-key-input" class="api-key-input" placeholder="gsk_..." autocomplete="off">
+                    <button class="btn btn-outline" style="white-space:nowrap;font-size:12px;" onclick="toggleKeyVisibility()">Show</button>
+                    <button class="btn btn-outline" style="white-space:nowrap;font-size:12px;" onclick="saveApiKey()">Save</button>
+                </div>
+                <div id="api-key-status" style="font-size:11px;color:#6b7280;margin-top:4px;"></div>
+            </div>
         </div>
 
         <!-- Controls Row -->
         <div class="flex flex-wrap items-end gap-5 mb-6">
             <div id="model-section">
                 <div class="control-label mb-1.5">Model</div>
-                <select id="model-select" class="custom-select">
-                    <!-- Cloud models -->
-                    <option value="whisper-large-v3-turbo" selected>Large v3 Turbo &mdash; best</option>
-                    <option value="whisper-large-v3">Large v3 &mdash; highest accuracy</option>
-                    <option value="distil-whisper-large-v3-en">Distil Large v3 &mdash; English only</option>
-                </select>
+                <select id="model-select" class="custom-select"></select>
             </div>
             <div>
                 <div class="control-label mb-1.5">Output</div>
@@ -213,37 +253,83 @@
 
         <!-- Completed -->
         <div id="completed-section" class="hidden">
-            <h3 style="font-size: 13px; font-weight: 600; color: #9ca3af; margin-bottom: 12px;">Completed Transcriptions</h3>
+            <div class="flex items-center justify-between mb-3">
+                <h3 style="font-size: 13px; font-weight: 600; color: #9ca3af;">Completed Transcriptions</h3>
+                <button class="btn btn-outline" style="font-size:11px;padding:5px 12px;" onclick="clearCompleted()">Clear All</button>
+            </div>
             <div id="completed-list" class="space-y-4"></div>
         </div>
     </div>
 
     <script>
     // ── State ───────────────────────────────────────────────────
-    let currentMode = 'cloud'; // 'cloud' or 'browser'
+    let currentMode = 'cloud';
     let worker = null;
     let jobQueue = [];
     let activeJobId = null;
     let jobCounter = 0;
     const jobData = {};
 
-    const GROQ_API = 'https://api.groq.com/openai/v1/audio/transcriptions';
-    const MAX_CHUNK_BYTES = 24 * 1024 * 1024; // 24MB to stay under Groq's 25MB limit
+    const GROQ_WHISPER_API = 'https://api.groq.com/openai/v1/audio/transcriptions';
+    const GROQ_CHAT_API    = 'https://api.groq.com/openai/v1/chat/completions';
+    const MAX_CHUNK_BYTES  = 24 * 1024 * 1024; // 24 MB — under Groq's 25 MB limit
+    const STREAMABLE_EXTS  = new Set(['mp3', 'wav', 'ogg', 'flac', 'opus', 'aac', 'wma']);
 
     // ── Init ────────────────────────────────────────────────────
     (function init() {
-        // Load API key (injected by GitHub Actions from repo secret)
-        const DEFAULT_KEY = '__GROQ_API_KEY__';
-        const injectedKey = DEFAULT_KEY.startsWith('__') ? '' : DEFAULT_KEY;
-        document.getElementById('api-key-input').value = injectedKey;
+        // Injected key from GitHub Actions (CI replaces the placeholder)
+        const INJECTED = '__GROQ_API_KEY__';
+        const injectedKey = INJECTED.startsWith('__') ? '' : INJECTED;
 
-        // Load saved mode
+        // Prefer injected, fall back to localStorage
+        const stored = localStorage.getItem('thq_groq_key') || '';
+        const key = injectedKey || stored;
+        document.getElementById('api-key-input').value = key;
+        updateKeyStatus(key);
+
         const savedMode = localStorage.getItem('thq_mode') || 'cloud';
         setMode(savedMode);
     })();
 
     function getApiKey() {
         return (document.getElementById('api-key-input').value || '').trim();
+    }
+
+    function saveApiKey() {
+        const key = getApiKey();
+        localStorage.setItem('thq_groq_key', key);
+        updateKeyStatus(key);
+        const btn = document.querySelector('[onclick="saveApiKey()"]');
+        const orig = btn.textContent;
+        btn.textContent = 'Saved!';
+        setTimeout(() => btn.textContent = orig, 1500);
+    }
+
+    function toggleKeyVisibility() {
+        const input = document.getElementById('api-key-input');
+        const btn = document.querySelector('[onclick="toggleKeyVisibility()"]');
+        if (input.type === 'password') {
+            input.type = 'text';
+            btn.textContent = 'Hide';
+        } else {
+            input.type = 'password';
+            btn.textContent = 'Show';
+        }
+    }
+
+    function updateKeyStatus(key) {
+        const el = document.getElementById('api-key-status');
+        if (!el) return;
+        if (key && key.startsWith('gsk_')) {
+            el.textContent = 'Key configured. Cloud mode and AI analysis are available.';
+            el.style.color = '#86efac';
+        } else if (key) {
+            el.textContent = 'Key looks unusual (expected gsk_... prefix). Double-check it.';
+            el.style.color = '#fde68a';
+        } else {
+            el.textContent = 'No key — cloud mode and AI analysis are unavailable. Browser mode still works offline.';
+            el.style.color = '#f87171';
+        }
     }
 
     // ── Mode toggle ─────────────────────────────────────────────
@@ -256,21 +342,24 @@
 
         const modelSelect = document.getElementById('model-select');
         const descEl = document.getElementById('mode-desc');
+        const keySection = document.getElementById('api-key-section');
 
         if (mode === 'cloud') {
             modelSelect.innerHTML = `
-                <option value="whisper-large-v3-turbo" selected>Large v3 Turbo &mdash; best</option>
-                <option value="whisper-large-v3">Large v3 &mdash; highest accuracy</option>
-                <option value="distil-whisper-large-v3-en">Distil Large v3 &mdash; English only</option>
+                <option value="whisper-large-v3-turbo" selected>Large v3 Turbo — best</option>
+                <option value="whisper-large-v3">Large v3 — highest accuracy</option>
+                <option value="distil-whisper-large-v3-en">Distil Large v3 — English only</option>
             `;
-            descEl.textContent = 'Fast cloud processing. Handles any file size, transcribes in seconds.';
+            descEl.textContent = 'Groq Whisper API. Transcribes in seconds. Requires a free Groq API key.';
+            keySection.style.display = '';
         } else {
             modelSelect.innerHTML = `
-                <option value="tiny">Tiny &mdash; fastest</option>
-                <option value="base" selected>Base &mdash; recommended</option>
-                <option value="small">Small &mdash; best accuracy</option>
+                <option value="tiny">Tiny — fastest</option>
+                <option value="base" selected>Base — recommended</option>
+                <option value="small">Small — best accuracy</option>
             `;
-            descEl.textContent = 'Runs Whisper in your browser. No data leaves your machine. Best for files under 1-2 hours.';
+            descEl.textContent = 'Runs Whisper in your browser. No data leaves your machine. Best for files under 1–2 hours.';
+            keySection.style.display = 'none';
         }
     }
 
@@ -290,7 +379,7 @@
 
     function handleFiles(files) {
         if (currentMode === 'cloud' && !getApiKey()) {
-            alert('Cloud mode is not available. The API key has not been configured.\n\nSwitch to Browser mode or contact the site admin.');
+            alert('Cloud mode requires a Groq API key.\n\nEnter your key in the "Groq API Key" field above, or switch to Browser mode for offline processing.');
             return;
         }
         for (const file of files) queueFile(file);
@@ -302,7 +391,7 @@
         const language = document.getElementById('language-select').value;
 
         jobData[jobId] = { filename: file.name, model, language, file, status: 'queued', mode: currentMode };
-        addToQueueUI(jobId, file.name, model);
+        addToQueueUI(jobId, file.name, model, file.size);
         jobQueue.push(jobId);
         processNext();
     }
@@ -321,24 +410,26 @@
     }
 
     // ═══════════════════════════════════════════════════════════
-    // CLOUD MODE (Groq API)
+    // CLOUD MODE (Groq Whisper API)
     // ═══════════════════════════════════════════════════════════
 
     async function processCloud(jobId, job) {
         const apiKey = getApiKey();
         const file = job.file;
         const fileSizeBytes = file.size;
+        const ext = (file.name.split('.').pop() || '').toLowerCase();
+        const isStreamable = STREAMABLE_EXTS.has(ext);
 
         try {
-            // Check if we need to chunk
             if (fileSizeBytes <= MAX_CHUNK_BYTES) {
-                // Single request
+                // Single request — any format
                 updateJobUI(jobId, 'transcribing', 30, 'Sending to Groq...');
-                const result = await groqTranscribe(file, job.model, job.language, apiKey);
+                const result = await groqWhisper(file, job.model, job.language, apiKey);
                 updateJobUI(jobId, 'transcribing', 90, 'Processing response...');
                 completeJob(jobId, buildResult(result, job.language));
-            } else {
-                // Multi-chunk
+
+            } else if (isStreamable) {
+                // Stream formats (MP3, WAV, OGG…) can be byte-sliced safely
                 const totalChunks = Math.ceil(fileSizeBytes / MAX_CHUNK_BYTES);
                 updateJobUI(jobId, 'transcribing', 0, `Splitting into ${totalChunks} chunks...`);
 
@@ -350,32 +441,33 @@
                     const start = i * MAX_CHUNK_BYTES;
                     const end = Math.min(start + MAX_CHUNK_BYTES, fileSizeBytes);
                     const chunkBlob = file.slice(start, end);
-
-                    // Preserve original extension for Groq to recognize format
-                    const ext = file.name.split('.').pop() || 'mp4';
                     const chunkFile = new File([chunkBlob], `chunk_${i}.${ext}`, { type: file.type });
 
-                    const pct = Math.round(((i) / totalChunks) * 100);
+                    const pct = Math.round((i / totalChunks) * 100);
                     updateJobUI(jobId, 'transcribing', pct, `Transcribing chunk ${i + 1}/${totalChunks}...`);
 
-                    const result = await groqTranscribe(chunkFile, job.model, job.language, apiKey);
-
+                    const result = await groqWhisper(chunkFile, job.model, job.language, apiKey);
                     if (result.text) fullText += (fullText ? ' ' : '') + result.text.trim();
                     if (result.segments) {
                         result.segments.forEach(seg => {
-                            allSegments.push({
-                                index: allSegments.length + 1,
-                                start: seg.start,
-                                end: seg.end,
-                                text: seg.text,
-                            });
+                            allSegments.push({ index: allSegments.length + 1, start: seg.start, end: seg.end, text: seg.text });
                         });
                     }
                     if (result.language) detectedLang = result.language;
                 }
 
                 completeJob(jobId, buildResultFromParts(fullText, allSegments, detectedLang));
+
+            } else {
+                // Container formats (MP4, MOV, MKV…) can't be byte-sliced.
+                // Warn user and attempt single-shot anyway (Groq may accept up to 25 MB).
+                const sizeMB = (fileSizeBytes / 1024 / 1024).toFixed(1);
+                updateJobUI(jobId, 'transcribing', 5,
+                    `Large ${ext.toUpperCase()} (${sizeMB} MB). Container formats can't be byte-split — sending as-is. For best results on large video files use Browser mode.`);
+                const result = await groqWhisper(file, job.model, job.language, apiKey);
+                completeJob(jobId, buildResult(result, job.language));
             }
+
         } catch (err) {
             updateJobUI(jobId, 'error', 0, `Groq API error: ${err.message}`);
             activeJobId = null;
@@ -383,7 +475,7 @@
         }
     }
 
-    async function groqTranscribe(file, model, language, apiKey) {
+    async function groqWhisper(file, model, language, apiKey) {
         const formData = new FormData();
         formData.append('file', file);
         formData.append('model', model);
@@ -391,7 +483,7 @@
         formData.append('temperature', '0');
         if (language) formData.append('language', language);
 
-        const res = await fetch(GROQ_API, {
+        const res = await fetch(GROQ_WHISPER_API, {
             method: 'POST',
             headers: { 'Authorization': `Bearer ${apiKey}` },
             body: formData,
@@ -420,23 +512,26 @@
     }
 
     function buildResultFromParts(text, segments, language) {
-        // Build SRT
-        const srt = segments.map((s, i) => {
-            const fmtTime = (sec) => {
-                const h = Math.floor(sec / 3600);
-                const m = Math.floor((sec % 3600) / 60);
-                const secs = Math.floor(sec % 60);
-                const ms = Math.round((sec % 1) * 1000);
-                return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(secs).padStart(2,'0')},${String(ms).padStart(3,'0')}`;
-            };
-            return `${i+1}\n${fmtTime(s.start)} --> ${fmtTime(s.end)}\n${s.text}\n`;
-        }).join('\n');
+        const fmtTime = (sec) => {
+            const h = Math.floor(sec / 3600);
+            const m = Math.floor((sec % 3600) / 60);
+            const s = Math.floor(sec % 60);
+            const ms = Math.round((sec % 1) * 1000);
+            return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')},${String(ms).padStart(3,'0')}`;
+        };
+
+        const srt = segments.map((s, i) =>
+            `${i + 1}\n${fmtTime(s.start)} --> ${fmtTime(s.end)}\n${s.text}\n`
+        ).join('\n');
+
+        const words = text.trim().split(/\s+/).filter(Boolean).length;
 
         return {
             text: text.trim(),
             srt,
             json: { segments },
             segment_count: segments.length,
+            word_count: words,
             language,
         };
     }
@@ -507,6 +602,117 @@
     }
 
     // ═══════════════════════════════════════════════════════════
+    // AI ANALYSIS (Groq LLaMA)
+    // ═══════════════════════════════════════════════════════════
+
+    const AI_PROMPTS = {
+        summary: {
+            label: 'Summarize',
+            system: 'You are a helpful assistant that summarizes transcripts concisely.',
+            user: (text) => `Summarize the following transcript in 3–5 sentences. Focus on the main topics, decisions, and outcomes. Be concise.\n\nTranscript:\n${text}`,
+        },
+        actions: {
+            label: 'Action Items',
+            system: 'You are a helpful assistant that extracts action items from meeting transcripts.',
+            user: (text) => `Extract all action items, tasks, and commitments from the following transcript. Format each as a bullet point starting with an action verb. If none are found, say "No action items identified."\n\nTranscript:\n${text}`,
+        },
+        notes: {
+            label: 'Meeting Notes',
+            system: 'You are a helpful assistant that creates structured meeting notes from transcripts.',
+            user: (text) => `Create structured meeting notes from the following transcript. Use these sections:\n\n## Overview\n## Key Points\n## Decisions Made\n## Action Items\n## Next Steps\n\nOmit any section that has no relevant content.\n\nTranscript:\n${text}`,
+        },
+        topics: {
+            label: 'Key Topics',
+            system: 'You are a helpful assistant that identifies main topics in a transcript.',
+            user: (text) => `List the 5–10 main topics discussed in the following transcript. For each topic, provide one sentence of context.\n\nTranscript:\n${text}`,
+        },
+    };
+
+    async function groqChat(systemPrompt, userMessage, apiKey) {
+        // Limit to ~8000 words to stay within context
+        const MAX_WORDS = 8000;
+        const words = userMessage.split(/\s+/);
+        if (words.length > MAX_WORDS) {
+            userMessage = words.slice(0, MAX_WORDS).join(' ') + '\n\n[Transcript truncated for length]';
+        }
+
+        const res = await fetch(GROQ_CHAT_API, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${apiKey}`,
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                model: 'llama-3.3-70b-versatile',
+                messages: [
+                    { role: 'system', content: systemPrompt },
+                    { role: 'user', content: userMessage },
+                ],
+                temperature: 0.3,
+                max_tokens: 1024,
+            }),
+        });
+
+        if (!res.ok) {
+            const errBody = await res.text();
+            let msg = `HTTP ${res.status}`;
+            try { msg = JSON.parse(errBody).error?.message || msg; } catch {}
+            throw new Error(msg);
+        }
+
+        const data = await res.json();
+        return data.choices?.[0]?.message?.content || '(no response)';
+    }
+
+    async function runAI(jobId, type) {
+        const apiKey = getApiKey();
+        if (!apiKey) {
+            alert('AI analysis requires a Groq API key. Enter it in the API key field above.');
+            return;
+        }
+
+        const job = jobData[jobId];
+        if (!job?.result?.text) return;
+
+        const prompt = AI_PROMPTS[type];
+        if (!prompt) return;
+
+        const resultEl = document.getElementById(`ai-result-${jobId}`);
+        const btns = document.querySelectorAll(`[data-ai-job="${jobId}"]`);
+        btns.forEach(b => b.disabled = true);
+
+        resultEl.className = 'ai-result-box loading mt-3';
+        resultEl.textContent = `Running ${prompt.label}...`;
+        resultEl.style.display = '';
+
+        try {
+            const response = await groqChat(prompt.system, prompt.user(job.result.text), apiKey);
+            resultEl.className = 'ai-result-box mt-3 fade-in';
+            // Safe text rendering — no innerHTML with untrusted content
+            resultEl.textContent = response;
+
+            // Add copy button
+            const copyBtn = document.createElement('button');
+            copyBtn.className = 'btn btn-outline mt-2';
+            copyBtn.style.cssText = 'font-size:11px;padding:4px 10px;display:block;';
+            copyBtn.textContent = 'Copy';
+            copyBtn.onclick = () => {
+                navigator.clipboard.writeText(response).then(() => {
+                    copyBtn.textContent = 'Copied!';
+                    setTimeout(() => copyBtn.textContent = 'Copy', 1500);
+                });
+            };
+            resultEl.appendChild(copyBtn);
+        } catch (err) {
+            resultEl.className = 'ai-result-box mt-3';
+            resultEl.style.color = '#fca5a5';
+            resultEl.textContent = `AI error: ${err.message}`;
+        } finally {
+            btns.forEach(b => b.disabled = false);
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════
     // SHARED UI
     // ═══════════════════════════════════════════════════════════
 
@@ -518,10 +724,18 @@
         processNext();
     }
 
-    function addToQueueUI(jobId, filename, model) {
+    function addToQueueUI(jobId, filename, model, fileSize) {
         document.getElementById('queue-section').classList.remove('hidden');
         const list = document.getElementById('queue-list');
         const modeLabel = jobData[jobId].mode === 'cloud' ? 'cloud' : 'browser';
+
+        // Large video file warning in cloud mode
+        const ext = (filename.split('.').pop() || '').toLowerCase();
+        const isLargeContainer = fileSize > MAX_CHUNK_BYTES && !STREAMABLE_EXTS.has(ext) && jobData[jobId].mode === 'cloud';
+        const warnHtml = isLargeContainer
+            ? `<div class="warn-banner mt-2">Large ${ext.toUpperCase()} file (${(fileSize/1024/1024).toFixed(0)} MB) — container formats can't be byte-split. Consider Browser mode for large video files.</div>`
+            : '';
+
         const el = document.createElement('div');
         el.id = `q-${jobId}`;
         el.className = 'glass p-4 fade-in';
@@ -536,7 +750,7 @@
                         <div style="font-size:14px;font-weight:500;color:white;" class="truncate">${esc(filename)}</div>
                         <div style="font-size:11px;color:#6b7280;" class="mt-0.5">
                             <span id="job-status-${jobId}">Queued</span>
-                            &middot; ${modeLabel} &middot; ${model}
+                            &middot; ${modeLabel} &middot; ${esc(model)}
                         </div>
                     </div>
                 </div>
@@ -545,6 +759,7 @@
             <div class="progress-bar-bg">
                 <div class="progress-bar-fill" id="job-bar-${jobId}" style="width:0%"></div>
             </div>
+            ${warnHtml}
         `;
         list.prepend(el);
         updateQueueCount();
@@ -552,8 +767,8 @@
 
     function updateJobUI(jobId, status, progress, detail) {
         const statusEl = document.getElementById(`job-status-${jobId}`);
-        const barEl = document.getElementById(`job-bar-${jobId}`);
-        const pctEl = document.getElementById(`job-pct-${jobId}`);
+        const barEl    = document.getElementById(`job-bar-${jobId}`);
+        const pctEl    = document.getElementById(`job-pct-${jobId}`);
         if (!statusEl) return;
 
         const labels = { queued: 'Queued', extracting: 'Extracting audio...', loading_model: 'Loading AI model...', transcribing: 'Transcribing...', error: 'Error' };
@@ -571,6 +786,11 @@
         document.getElementById('queue-count').textContent = `${n} file${n !== 1 ? 's' : ''}`;
     }
 
+    function clearCompleted() {
+        document.getElementById('completed-list').innerHTML = '';
+        document.getElementById('completed-section').classList.add('hidden');
+    }
+
     function moveToCompleted(jobId, result) {
         const qEl = document.getElementById(`q-${jobId}`);
         if (qEl) qEl.remove();
@@ -580,23 +800,27 @@
 
         document.getElementById('completed-section').classList.remove('hidden');
         const list = document.getElementById('completed-list');
-        const job = jobData[jobId];
-        const r = result;
-        const srt = r.srt || '';
-        const segJson = JSON.stringify(r.json?.segments || [], null, 2);
+        const job  = jobData[jobId];
+        const r    = result;
         const modeLabel = job.mode === 'cloud' ? 'cloud' : 'browser';
+
+        // Determine if AI analysis is available
+        const hasKey = !!getApiKey();
 
         const el = document.createElement('div');
         el.className = 'glass p-5 fade-in';
+
+        // Safe HTML construction — all user/transcript data goes through esc()
         el.innerHTML = `
             <div class="flex items-center justify-between mb-4">
                 <div>
                     <div style="font-size:15px;font-weight:600;color:white;">${esc(job.filename)}</div>
                     <div class="flex flex-wrap gap-2 mt-1.5">
                         <span class="badge badge-green">${r.segment_count} segments</span>
-                        <span class="badge badge-yellow">Lang: ${r.language}</span>
+                        <span class="badge badge-teal">${r.word_count.toLocaleString()} words</span>
+                        <span class="badge badge-yellow">Lang: ${esc(r.language)}</span>
                         <span class="badge badge-blue">${modeLabel}</span>
-                        <span class="badge badge-gray">${job.model}</span>
+                        <span class="badge badge-gray">${esc(job.model)}</span>
                     </div>
                 </div>
                 <div class="flex gap-2">
@@ -605,39 +829,92 @@
                     <button class="btn btn-outline" style="font-size:12px;" onclick="dlFile('${jobId}','json')">JSON</button>
                 </div>
             </div>
-            <div class="flex gap-1 mb-3">
+
+            <!-- Transcript tabs -->
+            <div class="flex gap-1 mb-3" id="tabs-${jobId}">
                 <div class="tab active" data-fmt="text" data-j="${jobId}">Plain Text</div>
                 <div class="tab" data-fmt="srt" data-j="${jobId}">SRT</div>
                 <div class="tab" data-fmt="segments" data-j="${jobId}">Segments</div>
             </div>
-            <div class="transcript-box p-4" style="font-size:13px;" id="tx-${jobId}">
-                <div style="color:#d1d5db;white-space:pre-wrap;line-height:1.7;">${esc(r.text)}</div>
-            </div>
-            <div class="hidden" id="dt-text-${jobId}">${esc(r.text)}</div>
-            <div class="hidden" id="dt-srt-${jobId}">${esc(srt)}</div>
-            <div class="hidden" id="dt-segments-${jobId}">${esc(segJson)}</div>
+            <div class="transcript-box p-4" id="tx-${jobId}"></div>
+
+            <!-- Hidden data stores (escaped) -->
+            <div class="hidden" id="dt-text-${jobId}"></div>
+            <div class="hidden" id="dt-srt-${jobId}"></div>
+            <div class="hidden" id="dt-segments-${jobId}"></div>
+
             <div class="flex items-center justify-end mt-3 pt-3" style="border-top:1px solid rgba(255,255,255,0.06);">
                 <button class="btn btn-outline" style="font-size:12px;" onclick="copyTx('${jobId}')">Copy to clipboard</button>
+            </div>
+
+            <!-- AI Analysis -->
+            <div class="mt-4 pt-4" style="border-top:1px solid rgba(255,255,255,0.06);">
+                <div class="control-label mb-2">AI Analysis
+                    <span style="font-size:10px;font-weight:400;text-transform:none;letter-spacing:0;color:#4b5563;margin-left:6px;">
+                        Powered by Groq LLaMA
+                    </span>
+                </div>
+                ${hasKey ? `
+                <div class="flex flex-wrap gap-2">
+                    <button class="btn btn-ai" data-ai-job="${jobId}" onclick="runAI('${jobId}','summary')">Summarize</button>
+                    <button class="btn btn-ai" data-ai-job="${jobId}" onclick="runAI('${jobId}','actions')">Action Items</button>
+                    <button class="btn btn-ai" data-ai-job="${jobId}" onclick="runAI('${jobId}','notes')">Meeting Notes</button>
+                    <button class="btn btn-ai" data-ai-job="${jobId}" onclick="runAI('${jobId}','topics')">Key Topics</button>
+                </div>
+                <div id="ai-result-${jobId}" style="display:none;"></div>
+                ` : `
+                <p style="font-size:12px;color:#4b5563;">Add a Groq API key above to enable AI analysis.</p>
+                `}
             </div>
         `;
         list.prepend(el);
 
+        // Store raw transcript data as text nodes (safe, no innerHTML injection)
+        document.getElementById(`dt-text-${jobId}`).textContent    = r.text;
+        document.getElementById(`dt-srt-${jobId}`).textContent     = r.srt;
+        document.getElementById(`dt-segments-${jobId}`).textContent = JSON.stringify(r.json?.segments || [], null, 2);
+
+        // Render initial view (Plain Text)
+        renderTranscriptView(jobId, 'text');
+
+        // Tab click handlers
         el.querySelectorAll('.tab').forEach(tab => {
             tab.addEventListener('click', () => {
                 el.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
                 tab.classList.add('active');
-                const fmt = tab.dataset.fmt;
-                const box = document.getElementById(`tx-${jobId}`);
-                const content = document.getElementById(`dt-${fmt}-${jobId}`).textContent;
-                box.innerHTML = fmt === 'segments'
-                    ? `<pre style="color:#d1d5db;font-size:12px;line-height:1.6;">${content}</pre>`
-                    : `<div style="color:#d1d5db;white-space:pre-wrap;line-height:1.7;">${content}</div>`;
+                renderTranscriptView(jobId, tab.dataset.fmt);
             });
         });
     }
 
+    function renderTranscriptView(jobId, fmt) {
+        const box     = document.getElementById(`tx-${jobId}`);
+        const dataEl  = document.getElementById(`dt-${fmt}-${jobId}`);
+        if (!box || !dataEl) return;
+
+        // Read raw text from the data element (safe — stored as textContent)
+        const content = dataEl.textContent;
+        box.textContent = ''; // clear
+
+        if (fmt === 'segments') {
+            const pre = document.createElement('pre');
+            pre.style.cssText = 'color:#d1d5db;font-size:12px;line-height:1.6;margin:0;';
+            pre.textContent = content;
+            box.appendChild(pre);
+        } else {
+            const div = document.createElement('div');
+            div.style.cssText = 'color:#d1d5db;white-space:pre-wrap;line-height:1.7;';
+            div.textContent = content;
+            box.appendChild(div);
+        }
+    }
+
     // ── Helpers ──────────────────────────────────────────────────
-    function esc(t) { const d = document.createElement('div'); d.textContent = t; return d.innerHTML; }
+    function esc(t) {
+        const d = document.createElement('div');
+        d.textContent = String(t ?? '');
+        return d.innerHTML;
+    }
 
     function dlFile(jobId, fmt) {
         const job = jobData[jobId];
@@ -645,12 +922,12 @@
         const r = job.result;
         const stem = job.filename.replace(/\.[^.]+$/, '');
         let content, mime, ext;
-        if (fmt === 'txt') { content = r.text; mime = 'text/plain'; ext = 'txt'; }
-        else if (fmt === 'srt') { content = r.srt; mime = 'text/plain'; ext = 'srt'; }
-        else { content = JSON.stringify(r.json, null, 2); mime = 'application/json'; ext = 'json'; }
+        if (fmt === 'txt')       { content = r.text;                              mime = 'text/plain';       ext = 'txt';  }
+        else if (fmt === 'srt')  { content = r.srt;                               mime = 'text/plain';       ext = 'srt';  }
+        else                     { content = JSON.stringify(r.json, null, 2);     mime = 'application/json'; ext = 'json'; }
         const blob = new Blob([content], { type: mime });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
+        const url  = URL.createObjectURL(blob);
+        const a    = document.createElement('a');
         a.href = url; a.download = `${stem}.${ext}`; a.click();
         URL.revokeObjectURL(url);
     }
