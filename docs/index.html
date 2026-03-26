@@ -246,11 +246,11 @@
         <div id="url-zone" class="mb-6" style="display:none;">
             <div class="glass p-6">
                 <div class="url-input-wrap">
-                    <input type="text" id="url-input" class="url-input" placeholder="Paste a direct link to an audio or video file..." onkeydown="if(event.key==='Enter')submitUrl()">
+                    <input type="text" id="url-input" class="url-input" placeholder="Paste a link to any audio or video file..." onkeydown="if(event.key==='Enter')submitUrl()">
                     <button class="btn-primary" id="url-submit-btn" onclick="submitUrl()">Transcribe</button>
                 </div>
                 <div class="url-sites">
-                    Paste any direct link to an audio/video file &mdash; <span>.mp4</span>, <span>.mp3</span>, <span>.wav</span>, <span>.m4a</span>, <span>.webm</span>, <span>.ogg</span>, <span>.flac</span>, etc. Works with <span>SharePoint</span>, <span>OneDrive</span>, <span>Google Drive</span> (shared), <span>Dropbox</span>, <span>S3</span>, and any public file URL. File is fetched in your browser and sent to Groq &mdash; nothing leaves the page.
+                    Paste a direct link to any audio/video file &mdash; <span>.mp4</span>, <span>.mp3</span>, <span>.wav</span>, <span>.m4a</span>, <span>.webm</span>, etc. Also supports <span>Fathom</span> meeting links (with speaker names). Works with <span>SharePoint</span>, <span>OneDrive</span>, <span>Google Drive</span>, <span>Dropbox</span>, <span>S3</span>, and any public file URL.
                 </div>
             </div>
         </div>
@@ -282,6 +282,7 @@
     const jobData = {};
 
     const GROQ_API = 'https://api.groq.com/openai/v1/audio/transcriptions';
+    const WORKER_URL = '__WORKER_URL__';
     const MAX_CHUNK_BYTES = 24 * 1024 * 1024; // 24MB to stay under Groq's 25MB limit
 
     // ── Init ────────────────────────────────────────────────────
@@ -319,15 +320,8 @@
             return;
         }
 
-        if (!getApiKey()) {
-            alert('Cloud mode API key is not configured.\n\nURL transcription requires the Groq API. Contact the site admin.');
-            return;
-        }
-
-        // URL mode always uses Groq cloud models
-        const modelSelect = document.getElementById('model-select');
-        let model = modelSelect.value;
-        // If browser mode models are showing, override with default cloud model
+        // URL mode always uses Groq cloud models via Worker
+        let model = document.getElementById('model-select').value;
         if (['tiny', 'base', 'small', 'medium', 'large-v3'].includes(model)) {
             model = 'whisper-large-v3-turbo';
         }
@@ -443,89 +437,58 @@
     }
 
     // ═══════════════════════════════════════════════════════════
-    // URL MODE (Browser fetch + Groq API — no server needed)
+    // URL MODE (Cloudflare Worker — fetch + Groq server-side)
     // ═══════════════════════════════════════════════════════════
 
+    function getWorkerUrl() {
+        const url = WORKER_URL;
+        // If placeholder wasn't replaced, it's not configured
+        if (!url || url.startsWith('__')) return null;
+        return url.replace(/\/+$/, '');
+    }
+
     async function processUrl(jobId, job) {
-        const apiKey = getApiKey();
+        const workerUrl = getWorkerUrl();
+        if (!workerUrl) {
+            updateJobUI(jobId, 'error', 0, 'URL transcription is not configured. Contact the site admin.');
+            activeJobId = null;
+            processNext();
+            return;
+        }
 
         try {
-            // Step 1: Fetch the file from the URL
-            updateJobUI(jobId, 'transcribing', 5, 'Downloading file from URL...');
+            updateJobUI(jobId, 'transcribing', 10, 'Sending URL to transcription service...');
 
-            const res = await fetch(job.url);
-            if (!res.ok) throw new Error(`Failed to download: HTTP ${res.status}`);
+            const res = await fetch(`${workerUrl}/transcribe-url`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    url: job.url,
+                    model: job.model,
+                    language: job.language || undefined,
+                }),
+            });
 
-            const contentLength = res.headers.get('content-length');
-            let blob;
+            const data = await res.json();
 
-            if (contentLength && parseInt(contentLength) > 0) {
-                // Stream with progress
-                const total = parseInt(contentLength);
-                const reader = res.body.getReader();
-                const chunks = [];
-                let received = 0;
-
-                while (true) {
-                    const { done, value } = await reader.read();
-                    if (done) break;
-                    chunks.push(value);
-                    received += value.length;
-                    const pct = Math.min(40, Math.round((received / total) * 40));
-                    updateJobUI(jobId, 'transcribing', pct, `Downloading... ${(received / 1048576).toFixed(1)} / ${(total / 1048576).toFixed(1)} MB`);
-                }
-                blob = new Blob(chunks);
-            } else {
-                blob = await res.blob();
+            if (!res.ok) {
+                throw new Error(data.error || `Worker error: HTTP ${res.status}`);
             }
 
-            updateJobUI(jobId, 'transcribing', 45, `Downloaded ${(blob.size / 1048576).toFixed(1)} MB, sending to Groq...`);
+            updateJobUI(jobId, 'transcribing', 95, 'Processing result...');
 
-            // Step 2: Determine filename/extension from URL
-            const urlPath = job.url.split('?')[0].split('#')[0];
-            const urlFilename = urlPath.split('/').pop() || 'audio.mp4';
-            const ext = urlFilename.includes('.') ? urlFilename.split('.').pop() : 'mp4';
-            const file = new File([blob], `download.${ext}`, { type: blob.type || `audio/${ext}` });
+            // Build result from worker response
+            const text = data.transcript || '';
+            const segments = (data.segments || []).map((s, i) => ({
+                index: i + 1, start: s.start ?? 0, end: s.end ?? 0, text: (s.text || '').trim(),
+            }));
+            const lang = data.language || 'auto';
 
-            // Step 3: Send to Groq (chunking if needed, same as cloud mode)
-            if (file.size <= MAX_CHUNK_BYTES) {
-                updateJobUI(jobId, 'transcribing', 50, 'Transcribing with Groq...');
-                const result = await groqTranscribe(file, job.model, job.language, apiKey);
-                updateJobUI(jobId, 'transcribing', 95, 'Processing result...');
-                completeJob(jobId, buildResult(result, job.language));
-            } else {
-                const totalChunks = Math.ceil(file.size / MAX_CHUNK_BYTES);
-                updateJobUI(jobId, 'transcribing', 50, `Splitting into ${totalChunks} chunks...`);
-
-                const allSegments = [];
-                let fullText = '';
-                let detectedLang = job.language || 'auto';
-
-                for (let i = 0; i < totalChunks; i++) {
-                    const start = i * MAX_CHUNK_BYTES;
-                    const end = Math.min(start + MAX_CHUNK_BYTES, file.size);
-                    const chunkBlob = file.slice(start, end);
-                    const chunkFile = new File([chunkBlob], `chunk_${i}.${ext}`, { type: file.type });
-
-                    const pct = 50 + Math.round(((i + 1) / totalChunks) * 45);
-                    updateJobUI(jobId, 'transcribing', pct, `Transcribing chunk ${i + 1}/${totalChunks}...`);
-
-                    const result = await groqTranscribe(chunkFile, job.model, job.language, apiKey);
-                    if (result.text) fullText += (fullText ? ' ' : '') + result.text.trim();
-                    if (result.segments) {
-                        result.segments.forEach(seg => {
-                            allSegments.push({ index: allSegments.length + 1, start: seg.start, end: seg.end, text: seg.text });
-                        });
-                    }
-                    if (result.language) detectedLang = result.language;
-                }
-
-                completeJob(jobId, buildResultFromParts(fullText, allSegments, detectedLang));
-            }
+            completeJob(jobId, buildResultFromParts(text, segments, lang));
         } catch (err) {
             let msg = err.message;
-            if (msg.includes('Failed to fetch') || msg.includes('NetworkError') || msg.includes('CORS')) {
-                msg = 'Cannot download this file — the server may block direct browser access (CORS). Try downloading the file first and uploading it via the Upload Files tab.';
+            if (msg.includes('Failed to fetch')) {
+                msg = 'Cannot reach transcription service. It may be temporarily unavailable.';
             }
             updateJobUI(jobId, 'error', 0, msg);
             activeJobId = null;

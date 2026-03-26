@@ -1,0 +1,6 @@
+name = "transcribehq-worker"
+main = "index.js"
+compatibility_date = "2024-01-01"
+
+# Set these secrets via: npx wrangler secret put GROQ_API_KEY
+# Optional: npx wrangler secret put FATHOM_API_KEY
