@@ -115,6 +115,34 @@
         .mode-btn.active { background: #6366f1; color: white; }
         .mode-btn:hover:not(.active) { color: #d4d4d4; }
 
+        /* Input type toggle (File vs URL) */
+        .input-toggle { display: flex; gap: 0; background: #1a1a28; border-radius: 8px; border: 1px solid rgba(255,255,255,0.08); overflow: hidden; margin-bottom: 16px; }
+        .input-toggle-btn { flex: 1; padding: 10px 20px; font-size: 13px; font-weight: 600; cursor: pointer; border: none; background: transparent; color: #6b7280; transition: all 0.15s; text-align: center; }
+        .input-toggle-btn.active { background: rgba(99, 102, 241, 0.15); color: #a5b4fc; border-bottom: 2px solid #6366f1; }
+        .input-toggle-btn:hover:not(.active) { color: #d4d4d4; }
+
+        /* URL input */
+        .url-input-wrap { display: flex; gap: 10px; }
+        .url-input {
+            flex: 1;
+            background: #1a1a28;
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 10px;
+            padding: 14px 16px;
+            color: #e5e5e5;
+            font-size: 14px;
+            font-family: 'Inter', system-ui, sans-serif;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+        .url-input:focus { border-color: rgba(99, 102, 241, 0.5); }
+        .url-input::placeholder { color: #4b5563; }
+        .btn-primary { background: #6366f1; color: white; padding: 12px 24px; border-radius: 10px; font-weight: 600; font-size: 14px; cursor: pointer; border: none; transition: all 0.15s; }
+        .btn-primary:hover { background: #818cf8; }
+        .btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
+        .url-sites { font-size: 11px; color: #4b5563; margin-top: 8px; line-height: 1.6; }
+        .url-sites span { color: #6b7280; }
+
     </style>
 </head>
 <body>
@@ -187,7 +215,19 @@
             </div>
         </div>
 
-        <!-- Drop Zone -->
+        <!-- Input Type Toggle -->
+        <div class="input-toggle">
+            <button class="input-toggle-btn active" id="toggle-file" onclick="setInputType('file')">
+                <svg style="display:inline;vertical-align:-2px;margin-right:4px;" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                Upload Files
+            </button>
+            <button class="input-toggle-btn" id="toggle-url" onclick="setInputType('url')">
+                <svg style="display:inline;vertical-align:-2px;margin-right:4px;" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+                Paste URL
+            </button>
+        </div>
+
+        <!-- Drop Zone (File mode) -->
         <div id="drop-zone" class="drop-zone p-12 text-center mb-6">
             <div class="mb-4">
                 <svg class="mx-auto" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#6b7280" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
@@ -200,6 +240,19 @@
             <p style="font-size: 16px; font-weight: 600; color: #e5e5e5;">Drop files here or click to browse</p>
             <p style="font-size: 13px; color: #6b7280; margin-top: 6px;">MP4, MP3, WAV, M4A, WEBM, OGG, FLAC &mdash; any file size</p>
             <input type="file" id="file-input" class="hidden" multiple accept="audio/*,video/*,.mp4,.mp3,.wav,.m4a,.ogg,.flac,.webm,.avi,.mov,.mkv,.wma,.aac,.opus">
+        </div>
+
+        <!-- URL Input (URL mode) -->
+        <div id="url-zone" class="mb-6" style="display:none;">
+            <div class="glass p-6">
+                <div class="url-input-wrap">
+                    <input type="text" id="url-input" class="url-input" placeholder="Paste a direct link to an audio or video file..." onkeydown="if(event.key==='Enter')submitUrl()">
+                    <button class="btn-primary" id="url-submit-btn" onclick="submitUrl()">Transcribe</button>
+                </div>
+                <div class="url-sites">
+                    Paste any direct link to an audio/video file &mdash; <span>.mp4</span>, <span>.mp3</span>, <span>.wav</span>, <span>.m4a</span>, <span>.webm</span>, <span>.ogg</span>, <span>.flac</span>, etc. Works with <span>SharePoint</span>, <span>OneDrive</span>, <span>Google Drive</span> (shared), <span>Dropbox</span>, <span>S3</span>, and any public file URL. File is fetched in your browser and sent to Groq &mdash; nothing leaves the page.
+                </div>
+            </div>
         </div>
 
         <!-- Queue -->
@@ -221,6 +274,7 @@
     <script>
     // ── State ───────────────────────────────────────────────────
     let currentMode = 'cloud'; // 'cloud' or 'browser'
+    let currentInputType = 'file'; // 'file' or 'url'
     let worker = null;
     let jobQueue = [];
     let activeJobId = null;
@@ -244,6 +298,72 @@
 
     function getApiKey() {
         return (document.getElementById('api-key-input').value || '').trim();
+    }
+
+    // ── Input type toggle (File vs URL) ─────────────────────────
+    function setInputType(type) {
+        currentInputType = type;
+        document.getElementById('toggle-file').classList.toggle('active', type === 'file');
+        document.getElementById('toggle-url').classList.toggle('active', type === 'url');
+        document.getElementById('drop-zone').style.display = type === 'file' ? '' : 'none';
+        document.getElementById('url-zone').style.display = type === 'url' ? '' : 'none';
+    }
+
+    function submitUrl() {
+        const input = document.getElementById('url-input');
+        const url = input.value.trim();
+        if (!url) return;
+
+        if (!url.startsWith('http://') && !url.startsWith('https://')) {
+            alert('Please enter a valid URL starting with http:// or https://');
+            return;
+        }
+
+        if (!getApiKey()) {
+            alert('Cloud mode API key is not configured.\n\nURL transcription requires the Groq API. Contact the site admin.');
+            return;
+        }
+
+        // URL mode always uses Groq cloud models
+        const modelSelect = document.getElementById('model-select');
+        let model = modelSelect.value;
+        // If browser mode models are showing, override with default cloud model
+        if (['tiny', 'base', 'small', 'medium', 'large-v3'].includes(model)) {
+            model = 'whisper-large-v3-turbo';
+        }
+        const language = document.getElementById('language-select').value;
+
+        const jobId = `job_${++jobCounter}`;
+        const displayName = extractDisplayName(url);
+        jobData[jobId] = {
+            filename: displayName,
+            model,
+            language,
+            file: null,
+            status: 'queued',
+            mode: 'url',
+            url: url,
+        };
+        addToQueueUI(jobId, displayName, model);
+        jobQueue.push(jobId);
+        input.value = '';
+        processNext();
+    }
+
+    function extractDisplayName(url) {
+        try {
+            const u = new URL(url);
+            if (u.hostname.includes('youtube.com') || u.hostname.includes('youtu.be')) {
+                const v = u.searchParams.get('v');
+                return v ? `YouTube: ${v}` : `YouTube: ${u.pathname.split('/').pop()}`;
+            }
+            if (u.hostname.includes('fathom')) return `Fathom: ${u.pathname.split('/').pop()}`;
+            if (u.hostname.includes('vimeo')) return `Vimeo: ${u.pathname.split('/').pop()}`;
+            if (u.hostname.includes('tiktok')) return `TikTok: ${u.pathname.split('/').pop()}`;
+            if (u.hostname.includes('twitter.com') || u.hostname.includes('x.com')) return `X/Twitter: ${u.pathname.split('/').pop()}`;
+            if (u.hostname.includes('loom.com')) return `Loom: ${u.pathname.split('/').pop()}`;
+            return u.hostname + u.pathname.substring(0, 40);
+        } catch { return url.substring(0, 50); }
     }
 
     // ── Mode toggle ─────────────────────────────────────────────
@@ -313,10 +433,103 @@
         activeJobId = jobId;
         const job = jobData[jobId];
 
-        if (job.mode === 'cloud') {
+        if (job.mode === 'url') {
+            await processUrl(jobId, job);
+        } else if (job.mode === 'cloud') {
             await processCloud(jobId, job);
         } else {
             await processBrowser(jobId, job);
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // URL MODE (Browser fetch + Groq API — no server needed)
+    // ═══════════════════════════════════════════════════════════
+
+    async function processUrl(jobId, job) {
+        const apiKey = getApiKey();
+
+        try {
+            // Step 1: Fetch the file from the URL
+            updateJobUI(jobId, 'transcribing', 5, 'Downloading file from URL...');
+
+            const res = await fetch(job.url);
+            if (!res.ok) throw new Error(`Failed to download: HTTP ${res.status}`);
+
+            const contentLength = res.headers.get('content-length');
+            let blob;
+
+            if (contentLength && parseInt(contentLength) > 0) {
+                // Stream with progress
+                const total = parseInt(contentLength);
+                const reader = res.body.getReader();
+                const chunks = [];
+                let received = 0;
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    chunks.push(value);
+                    received += value.length;
+                    const pct = Math.min(40, Math.round((received / total) * 40));
+                    updateJobUI(jobId, 'transcribing', pct, `Downloading... ${(received / 1048576).toFixed(1)} / ${(total / 1048576).toFixed(1)} MB`);
+                }
+                blob = new Blob(chunks);
+            } else {
+                blob = await res.blob();
+            }
+
+            updateJobUI(jobId, 'transcribing', 45, `Downloaded ${(blob.size / 1048576).toFixed(1)} MB, sending to Groq...`);
+
+            // Step 2: Determine filename/extension from URL
+            const urlPath = job.url.split('?')[0].split('#')[0];
+            const urlFilename = urlPath.split('/').pop() || 'audio.mp4';
+            const ext = urlFilename.includes('.') ? urlFilename.split('.').pop() : 'mp4';
+            const file = new File([blob], `download.${ext}`, { type: blob.type || `audio/${ext}` });
+
+            // Step 3: Send to Groq (chunking if needed, same as cloud mode)
+            if (file.size <= MAX_CHUNK_BYTES) {
+                updateJobUI(jobId, 'transcribing', 50, 'Transcribing with Groq...');
+                const result = await groqTranscribe(file, job.model, job.language, apiKey);
+                updateJobUI(jobId, 'transcribing', 95, 'Processing result...');
+                completeJob(jobId, buildResult(result, job.language));
+            } else {
+                const totalChunks = Math.ceil(file.size / MAX_CHUNK_BYTES);
+                updateJobUI(jobId, 'transcribing', 50, `Splitting into ${totalChunks} chunks...`);
+
+                const allSegments = [];
+                let fullText = '';
+                let detectedLang = job.language || 'auto';
+
+                for (let i = 0; i < totalChunks; i++) {
+                    const start = i * MAX_CHUNK_BYTES;
+                    const end = Math.min(start + MAX_CHUNK_BYTES, file.size);
+                    const chunkBlob = file.slice(start, end);
+                    const chunkFile = new File([chunkBlob], `chunk_${i}.${ext}`, { type: file.type });
+
+                    const pct = 50 + Math.round(((i + 1) / totalChunks) * 45);
+                    updateJobUI(jobId, 'transcribing', pct, `Transcribing chunk ${i + 1}/${totalChunks}...`);
+
+                    const result = await groqTranscribe(chunkFile, job.model, job.language, apiKey);
+                    if (result.text) fullText += (fullText ? ' ' : '') + result.text.trim();
+                    if (result.segments) {
+                        result.segments.forEach(seg => {
+                            allSegments.push({ index: allSegments.length + 1, start: seg.start, end: seg.end, text: seg.text });
+                        });
+                    }
+                    if (result.language) detectedLang = result.language;
+                }
+
+                completeJob(jobId, buildResultFromParts(fullText, allSegments, detectedLang));
+            }
+        } catch (err) {
+            let msg = err.message;
+            if (msg.includes('Failed to fetch') || msg.includes('NetworkError') || msg.includes('CORS')) {
+                msg = 'Cannot download this file — the server may block direct browser access (CORS). Try downloading the file first and uploading it via the Upload Files tab.';
+            }
+            updateJobUI(jobId, 'error', 0, msg);
+            activeJobId = null;
+            processNext();
         }
     }
 
@@ -521,17 +734,18 @@
     function addToQueueUI(jobId, filename, model) {
         document.getElementById('queue-section').classList.remove('hidden');
         const list = document.getElementById('queue-list');
-        const modeLabel = jobData[jobId].mode === 'cloud' ? 'cloud' : 'browser';
+        const job = jobData[jobId];
+        const modeLabel = job.mode === 'url' ? 'url' : job.mode === 'cloud' ? 'cloud' : 'browser';
+        const icon = job.mode === 'url'
+            ? `<svg class="flex-shrink-0" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#6366f1" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>`
+            : `<svg class="flex-shrink-0" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#6366f1" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>`;
         const el = document.createElement('div');
         el.id = `q-${jobId}`;
         el.className = 'glass p-4 fade-in';
         el.innerHTML = `
             <div class="flex items-center justify-between mb-2">
                 <div class="flex items-center gap-3 min-w-0">
-                    <svg class="flex-shrink-0" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#6366f1" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <polygon points="23 7 16 12 23 17 23 7"/>
-                        <rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
-                    </svg>
+                    ${icon}
                     <div class="min-w-0">
                         <div style="font-size:14px;font-weight:500;color:white;" class="truncate">${esc(filename)}</div>
                         <div style="font-size:11px;color:#6b7280;" class="mt-0.5">
@@ -584,7 +798,8 @@
         const r = result;
         const srt = r.srt || '';
         const segJson = JSON.stringify(r.json?.segments || [], null, 2);
-        const modeLabel = job.mode === 'cloud' ? 'cloud' : 'browser';
+        const modeLabel = job.mode === 'url' ? 'url' : job.mode === 'cloud' ? 'cloud' : 'browser';
+        const sourceNote = r.note ? `<span class="badge badge-gray" style="font-size:10px;">${esc(r.note)}</span>` : '';
 
         const el = document.createElement('div');
         el.className = 'glass p-5 fade-in';
@@ -592,11 +807,13 @@
             <div class="flex items-center justify-between mb-4">
                 <div>
                     <div style="font-size:15px;font-weight:600;color:white;">${esc(job.filename)}</div>
+                    ${job.url ? `<div style="font-size:11px;color:#4b5563;margin-top:2px;word-break:break-all;">${esc(job.url)}</div>` : ''}
                     <div class="flex flex-wrap gap-2 mt-1.5">
                         <span class="badge badge-green">${r.segment_count} segments</span>
                         <span class="badge badge-yellow">Lang: ${r.language}</span>
                         <span class="badge badge-blue">${modeLabel}</span>
                         <span class="badge badge-gray">${job.model}</span>
+                        ${sourceNote}
                     </div>
                 </div>
                 <div class="flex gap-2">
