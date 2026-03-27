@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: transcribehq-server
+    runtime: docker
+    plan: free
+    envVars:
+      - key: GROQ_API_KEY
+        sync: false
+      - key: FATHOM_API_KEY
+        sync: false
+      - key: PORT
+        value: "5111"

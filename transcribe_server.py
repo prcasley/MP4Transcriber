@@ -805,4 +805,5 @@ if __name__ == "__main__":
     print(f"  Auth:      {'API key required' if TRANSCRIBE_API_KEY else 'open (set TRANSCRIBE_API_KEY to secure)'}")
     print(f"  OpenAPI:   http://localhost:5111/api/openapi.json")
     print()
-    app.run(host="0.0.0.0", port=5111, debug=False, threaded=True)
+    port = int(os.environ.get("PORT", 5111))
+    app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
