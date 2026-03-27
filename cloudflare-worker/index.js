@@ -1,12 +1,14 @@
 /**
  * TranscribeHQ — Cloudflare Worker
  *
- * Accepts any URL, fetches the audio server-side (no CORS issues),
- * sends it to Groq Whisper API, and returns the transcript.
+ * Accepts any URL, handles it intelligently:
+ *   - YouTube: extracts built-in captions (instant, no download)
+ *   - Fathom: pulls transcript via Fathom API (with speaker names)
+ *   - Direct files: fetches audio, sends to Groq Whisper
  *
  * Secrets (set via `npx wrangler secret put`):
- *   GROQ_API_KEY   — required
- *   FATHOM_API_KEY  — optional, for direct Fathom transcript retrieval
+ *   GROQ_API_KEY    — required for direct file transcription
+ *   FATHOM_API_KEY  — optional, for Fathom meeting transcripts
  *
  * Deploy:
  *   cd cloudflare-worker
@@ -24,7 +26,6 @@ const CORS_HEADERS = {
 
 export default {
   async fetch(request, env) {
-    // Handle CORS preflight
     if (request.method === "OPTIONS") {
       return new Response(null, { headers: CORS_HEADERS });
     }
@@ -62,45 +63,69 @@ async function handleTranscribe(request, env) {
     return jsonResponse({ error: "No URL provided" }, 400);
   }
 
-  if (!env.GROQ_API_KEY) {
-    return jsonResponse({ error: "GROQ_API_KEY not configured on worker" }, 500);
-  }
-
   const model = body.model || "whisper-large-v3-turbo";
   const language = body.language || undefined;
   const sourceType = classifyUrl(sourceUrl);
 
   try {
-    // ── Fathom: try API first ──
-    if (sourceType === "fathom" && env.FATHOM_API_KEY) {
-      const fathomResult = await tryFathomApi(sourceUrl, env.FATHOM_API_KEY);
-      if (fathomResult) {
-        return jsonResponse({
-          transcript: fathomResult.transcript,
-          source_type: "fathom",
-          title: fathomResult.title,
-          note: "Transcript from Fathom API (includes speaker names)",
-        });
-      }
+    // ── YouTube: extract built-in captions ──
+    if (sourceType === "youtube") {
+      const result = await getYouTubeTranscript(sourceUrl, language);
+      return jsonResponse({
+        transcript: result.transcript,
+        segments: result.segments,
+        language: result.language,
+        duration: result.duration,
+        source_type: "youtube",
+        title: result.title,
+        note: "Transcript extracted from YouTube captions",
+      });
     }
 
-    // ── Download audio from URL ──
+    // ── Fathom: try API ──
+    if (sourceType === "fathom") {
+      if (env.FATHOM_API_KEY) {
+        const fathomResult = await tryFathomApi(sourceUrl, env.FATHOM_API_KEY);
+        if (fathomResult) {
+          return jsonResponse({
+            transcript: fathomResult.transcript,
+            source_type: "fathom",
+            title: fathomResult.title,
+            note: "Transcript from Fathom API (includes speaker names)",
+          });
+        }
+      }
+      throw new Error(
+        "Fathom transcription requires a Fathom API key. " +
+        "Ask your admin to set FATHOM_API_KEY on the worker."
+      );
+    }
+
+    // ── Unsupported platforms ──
+    if (sourceType === "platform") {
+      const domain = new URL(sourceUrl).hostname.replace("www.", "");
+      throw new Error(
+        `${domain} is not yet supported for direct transcription. ` +
+        "Try downloading the video first, then upload it via the Upload Files tab."
+      );
+    }
+
+    // ── Direct file URLs: fetch + Groq ──
+    if (!env.GROQ_API_KEY) {
+      return jsonResponse({ error: "GROQ_API_KEY not configured on worker" }, 500);
+    }
+
     const fileData = await downloadUrl(sourceUrl);
 
     if (fileData.size > MAX_GROQ_SIZE) {
       return jsonResponse({
-        error: `File too large (${(fileData.size / 1048576).toFixed(1)} MB). Groq limit is 25 MB. Download the file and use the Upload tab to auto-chunk.`,
+        error: `File is ${(fileData.size / 1048576).toFixed(1)} MB (Groq limit is 25 MB). Download the file and use the Upload tab — it auto-chunks large files.`,
         source_type: sourceType,
       }, 413);
     }
 
-    // ── Send to Groq ──
     const transcript = await transcribeWithGroq(
-      fileData.blob,
-      fileData.filename,
-      model,
-      language,
-      env.GROQ_API_KEY
+      fileData.blob, fileData.filename, model, language, env.GROQ_API_KEY
     );
 
     return jsonResponse({
@@ -111,10 +136,7 @@ async function handleTranscribe(request, env) {
       source_type: sourceType,
     });
   } catch (err) {
-    return jsonResponse({
-      error: err.message,
-      source_type: sourceType,
-    }, 500);
+    return jsonResponse({ error: err.message, source_type: sourceType }, 500);
   }
 }
 
@@ -140,6 +162,148 @@ function classifyUrl(url) {
   return "unknown";
 }
 
+// ── YouTube transcript extraction ────────────────────────────
+
+function extractVideoId(url) {
+  const u = new URL(url);
+  if (u.hostname.includes("youtu.be")) return u.pathname.slice(1).split("/")[0];
+  if (u.searchParams.has("v")) return u.searchParams.get("v");
+  if (u.pathname.includes("/embed/")) return u.pathname.split("/embed/")[1].split(/[/?]/)[0];
+  if (u.pathname.includes("/shorts/")) return u.pathname.split("/shorts/")[1].split(/[/?]/)[0];
+  return null;
+}
+
+async function getYouTubeTranscript(url, preferredLang) {
+  const videoId = extractVideoId(url);
+  if (!videoId) throw new Error("Could not extract YouTube video ID from this URL.");
+
+  // Fetch the YouTube watch page to get caption track info
+  const watchResp = await fetch(`https://www.youtube.com/watch?v=${videoId}`, {
+    headers: {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "Accept-Language": "en-US,en;q=0.9",
+    },
+  });
+
+  if (!watchResp.ok) throw new Error(`YouTube returned HTTP ${watchResp.status}`);
+
+  const html = await watchResp.text();
+
+  // Extract video title
+  let title = "YouTube Video";
+  const titleMatch = html.match(/"title":"(.*?)"/);
+  if (titleMatch) title = JSON.parse(`"${titleMatch[1]}"`);
+
+  // Find captions data in the page
+  const captionsMatch = html.match(/"captions":\s*(\{.*?"playerCaptionsTracklistRenderer".*?\})\s*,\s*"videoDetails"/s);
+  if (!captionsMatch) {
+    // Try alternate pattern
+    const altMatch = html.match(/"captionTracks":\s*(\[.*?\])/s);
+    if (!altMatch) {
+      throw new Error(
+        "No captions available for this YouTube video. " +
+        "The video may not have subtitles/CC enabled. " +
+        "Try downloading the video and uploading it via the Upload Files tab for AI transcription."
+      );
+    }
+    const tracks = JSON.parse(altMatch[1]);
+    return await fetchCaptionTrack(tracks, preferredLang, title);
+  }
+
+  // Parse the captions object to find caption tracks
+  let captionsData;
+  try {
+    // Extract just the captionTracks array
+    const tracksMatch = captionsMatch[1].match(/"captionTracks":\s*(\[.*?\])/s);
+    if (!tracksMatch) throw new Error("No caption tracks found");
+    captionsData = JSON.parse(tracksMatch[1]);
+  } catch {
+    throw new Error(
+      "Could not parse YouTube captions data. " +
+      "Try downloading the video and uploading it via the Upload Files tab."
+    );
+  }
+
+  return await fetchCaptionTrack(captionsData, preferredLang, title);
+}
+
+async function fetchCaptionTrack(tracks, preferredLang, title) {
+  if (!tracks || tracks.length === 0) {
+    throw new Error("No caption tracks available for this video.");
+  }
+
+  // Pick the best track: prefer manual captions in requested language, then auto-generated
+  let track = null;
+
+  if (preferredLang) {
+    // Exact language match (manual first)
+    track = tracks.find((t) => t.languageCode === preferredLang && t.kind !== "asr");
+    if (!track) track = tracks.find((t) => t.languageCode === preferredLang);
+  }
+
+  if (!track) {
+    // English manual, then English auto, then first manual, then first auto
+    track =
+      tracks.find((t) => t.languageCode === "en" && t.kind !== "asr") ||
+      tracks.find((t) => t.languageCode === "en") ||
+      tracks.find((t) => t.kind !== "asr") ||
+      tracks[0];
+  }
+
+  // Fetch the caption content as JSON3 format
+  let captionUrl = track.baseUrl;
+  if (!captionUrl.includes("fmt=")) captionUrl += "&fmt=json3";
+  else captionUrl = captionUrl.replace(/fmt=\w+/, "fmt=json3");
+
+  const captionResp = await fetch(captionUrl, {
+    headers: {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    },
+  });
+
+  if (!captionResp.ok) {
+    throw new Error("Failed to fetch YouTube captions. Try again or upload the video directly.");
+  }
+
+  const captionData = await captionResp.json();
+
+  // Parse JSON3 format into segments
+  const segments = [];
+  const textParts = [];
+  const events = captionData.events || [];
+
+  for (const event of events) {
+    if (!event.segs) continue;
+
+    const text = event.segs.map((s) => s.utf8 || "").join("").trim();
+    if (!text || text === "\n") continue;
+
+    const startSec = (event.tStartMs || 0) / 1000;
+    const endSec = startSec + (event.dDurationMs || 3000) / 1000;
+
+    segments.push({
+      start: Math.round(startSec * 100) / 100,
+      end: Math.round(endSec * 100) / 100,
+      text: text,
+    });
+    textParts.push(text);
+  }
+
+  if (segments.length === 0) {
+    throw new Error("YouTube captions were empty. Try uploading the video directly.");
+  }
+
+  const duration = segments[segments.length - 1].end;
+
+  return {
+    transcript: textParts.join(" "),
+    segments,
+    language: track.languageCode || "en",
+    duration: Math.round(duration * 100) / 100,
+    title,
+  };
+}
+
 // ── Fathom API ───────────────────────────────────────────────
 
 async function tryFathomApi(url, apiKey) {
@@ -162,7 +326,6 @@ async function tryFathomApi(url, apiKey) {
       ].filter(Boolean).map((s) => s.toLowerCase());
 
       if (matchFields.some((f) => f.includes(recordingId.toLowerCase()))) {
-        // Found — build transcript with speaker names
         const parts = [];
         for (const seg of meeting.transcript || []) {
           const speaker = seg.speaker?.display_name || seg.speaker_name || "Speaker";
@@ -201,23 +364,20 @@ async function downloadUrl(url) {
   const contentType = resp.headers.get("content-type") || "";
   const blob = await resp.blob();
 
-  // Reject HTML pages (user pasted a webpage, not a file)
   if (contentType.includes("text/html")) {
     throw new Error(
       "This URL returned a web page, not an audio/video file. " +
-      "For YouTube, Fathom, and other platforms, paste a direct download link to the media file."
+      "Paste a direct link to a media file, or use the Upload Files tab."
     );
   }
 
-  // Determine filename from URL
   const urlPath = url.split("?")[0].split("#")[0];
   const urlFilename = urlPath.split("/").pop() || "audio";
   const ext = urlFilename.includes(".")
     ? urlFilename.split(".").pop()
     : guessExtension(contentType);
-  const filename = `download.${ext}`;
 
-  return { blob, filename, size: blob.size };
+  return { blob, filename: `download.${ext}`, size: blob.size };
 }
 
 function guessExtension(contentType) {
@@ -250,9 +410,7 @@ async function transcribeWithGroq(blob, filename, model, language, apiKey) {
   if (!resp.ok) {
     const errText = await resp.text();
     let msg = `Groq API error (HTTP ${resp.status})`;
-    try {
-      msg = JSON.parse(errText).error?.message || msg;
-    } catch {}
+    try { msg = JSON.parse(errText).error?.message || msg; } catch {}
     throw new Error(msg);
   }
 
