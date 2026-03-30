@@ -361,22 +361,17 @@ def classify_url(url: str) -> str:
 def download_with_ytdlp(url: str, tmp_dir: str) -> str:
     """Download audio from any yt-dlp supported site."""
     output_template = os.path.join(tmp_dir, "audio.%(ext)s")
-    # Check if PO token plugin is available
-    plugin_check = subprocess.run(["yt-dlp", "--list-plugins"], capture_output=True, text=True, timeout=10)
-    plugin_info = plugin_check.stdout + plugin_check.stderr
-
     cmd = [
         "yt-dlp", "--no-playlist",
         "-x", "--audio-format", "mp3", "--audio-quality", "5",
         "--max-filesize", "500m",
         "-o", output_template,
-        "--no-warnings",
-        "-v",  # verbose to see if PO token is being used
+        "--no-warnings", "--quiet",
         url
     ]
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
     if result.returncode != 0:
-        raise RuntimeError(f"yt-dlp failed (plugins: {plugin_info[:200]}): {result.stderr[:500]}")
+        raise RuntimeError(f"yt-dlp failed: {result.stderr[:500]}")
 
     for f in Path(tmp_dir).iterdir():
         if f.suffix in [".mp3", ".m4a", ".wav", ".ogg", ".webm", ".opus", ".flac"]:
