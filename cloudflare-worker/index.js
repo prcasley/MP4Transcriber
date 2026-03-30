@@ -39,6 +39,7 @@ export default {
       groq_key_set: !!env.GROQ_API_KEY,
       fathom_key_set: !!env.FATHOM_API_KEY,
       render_url_set: !!env.RENDER_URL,
+      auth_required: !!env.TRANSCRIBE_API_KEY,
     });
     return jsonResponse({ error: "Not found. POST to /transcribe-url" }, 404);
   },
@@ -47,6 +48,12 @@ export default {
 // ── Main handler ─────────────────────────────────────────────
 
 async function handleTranscribe(request, env) {
+  // API key auth (skipped if TRANSCRIBE_API_KEY not set)
+  if (env.TRANSCRIBE_API_KEY) {
+    const key = request.headers.get("X-API-Key") || new URL(request.url).searchParams.get("api_key") || "";
+    if (key !== env.TRANSCRIBE_API_KEY) return jsonResponse({ error: "Unauthorized — invalid or missing API key" }, 401);
+  }
+
   let body;
   try { body = await request.json(); } catch { return jsonResponse({ error: "Invalid JSON body" }, 400); }
 
