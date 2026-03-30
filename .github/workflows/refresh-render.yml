@@ -1,0 +1,17 @@
+name: Refresh Render Server
+
+# Rebuilds the Render server weekly to pull latest yt-dlp + PO token plugin
+# This keeps YouTube transcription working even if YouTube updates BotGuard
+
+on:
+  schedule:
+    - cron: '0 8 * * 1'  # Every Monday at 8am UTC
+  workflow_dispatch:       # Manual trigger
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Render redeploy
+        run: |
+          curl -s -X POST "${{ secrets.RENDER_DEPLOY_HOOK }}" || echo "Deploy hook not set — set RENDER_DEPLOY_HOOK in repo secrets"
