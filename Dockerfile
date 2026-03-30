@@ -1,7 +1,10 @@
 FROM python:3.12-slim
 
-# Install ffmpeg and yt-dlp
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
+# Install ffmpeg + Node.js (needed for PO token plugin's BotGuard challenge)
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg curl && \
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y --no-install-recommends nodejs && \
+    rm -rf /var/lib/apt/lists/*
 RUN pip install --no-cache-dir yt-dlp requests flask flask-cors bgutil-ytdlp-pot-provider
 
 WORKDIR /app
