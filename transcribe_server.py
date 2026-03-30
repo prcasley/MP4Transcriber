@@ -679,12 +679,31 @@ def health():
     except Exception:
         pass
 
+    # Check yt-dlp plugins
+    plugins_info = ""
+    try:
+        result = subprocess.run(["yt-dlp", "--list-plugins"], capture_output=True, text=True, timeout=5)
+        plugins_info = (result.stdout + result.stderr).strip()[:300]
+    except Exception:
+        plugins_info = "could not check"
+
+    # Check Node.js
+    node_version = "not installed"
+    try:
+        result = subprocess.run(["node", "--version"], capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            node_version = result.stdout.strip()
+    except Exception:
+        pass
+
     return jsonify({
         "status": "ok" if (ytdlp_ok and GROQ_API_KEY) else "degraded",
         "version": "2.1.0",
         "groq_key_set": bool(GROQ_API_KEY),
         "fathom_key_set": bool(FATHOM_API_KEY),
         "yt_dlp": ytdlp_version,
+        "yt_dlp_plugins": plugins_info,
+        "node": node_version,
         "ffmpeg": "installed" if ffmpeg_ok else "missing",
         "auth_required": bool(TRANSCRIBE_API_KEY),
     })
