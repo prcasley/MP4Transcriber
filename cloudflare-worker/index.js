@@ -171,7 +171,7 @@ function classifyUrl(url) {
 async function tryFathomApi(url, apiKey) {
   const recordingId = url.replace(/\/+$/, "").split("/").pop();
   try {
-    const resp = await fetch("https://api.fathom.ai/external/v1/meetings", { headers: { "X-Api-Key": apiKey } });
+    const resp = await fetch("https://api.fathom.ai/external/v1/meetings?include_transcript=true", { headers: { "X-Api-Key": apiKey } });
     if (!resp.ok) return null;
     const data = await resp.json();
     for (const meeting of (data.items || data.meetings || [])) {
