@@ -367,6 +367,7 @@ def download_with_ytdlp(url: str, tmp_dir: str) -> str:
         "--max-filesize", "500m",
         "-o", output_template,
         "--no-warnings", "--quiet",
+        "--extractor-args", "youtube:player_client=mediaconnect",
         url
     ]
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
