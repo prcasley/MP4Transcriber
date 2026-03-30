@@ -22,7 +22,11 @@ from functools import wraps
 import requests as http_requests
 from flask import Flask, request, jsonify, send_from_directory, Response
 from flask_cors import CORS
-from faster_whisper import WhisperModel
+
+try:
+    from faster_whisper import WhisperModel
+except ImportError:
+    WhisperModel = None  # Running in cloud mode (Render) — local transcription disabled
 
 app = Flask(__name__, static_folder=".", static_url_path="")
 CORS(app)
@@ -49,7 +53,7 @@ OUTPUT_DIR.mkdir(exist_ok=True)
 
 # In-memory job tracking
 jobs: dict[str, dict] = {}
-models_cache: dict[str, WhisperModel] = {}
+models_cache: dict = {}
 model_lock = threading.Lock()
 
 ALLOWED_EXTENSIONS = {
