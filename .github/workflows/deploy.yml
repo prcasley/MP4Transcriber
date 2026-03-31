@@ -27,9 +27,11 @@ jobs:
         run: |
           sed -i "s|__GROQ_API_KEY__|${GROQ_API_KEY}|g" docs/index.html
           sed -i "s|__WORKER_URL__|${WORKER_URL}|g" docs/index.html
+          sed -i "s|__WORKER_KEY__|${WORKER_KEY}|g" docs/index.html
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           WORKER_URL: ${{ secrets.WORKER_URL }}
+          WORKER_KEY: ${{ secrets.WORKER_KEY }}
 
       - name: Setup Pages
         uses: actions/configure-pages@v4

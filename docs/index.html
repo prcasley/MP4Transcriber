@@ -283,6 +283,7 @@
 
     const GROQ_API = 'https://api.groq.com/openai/v1/audio/transcriptions';
     const WORKER_URL = '__WORKER_URL__';
+    const WORKER_KEY = '__WORKER_KEY__';
     const MAX_CHUNK_BYTES = 24 * 1024 * 1024; // 24MB to stay under Groq's 25MB limit
 
     // ── Init ────────────────────────────────────────────────────
@@ -459,9 +460,13 @@
         try {
             updateJobUI(jobId, 'transcribing', 10, 'Sending URL to transcription service...');
 
+            const headers = { 'Content-Type': 'application/json' };
+            const wk = WORKER_KEY;
+            if (wk && !wk.startsWith('__')) headers['X-API-Key'] = wk;
+
             const res = await fetch(`${workerUrl}/transcribe-url`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers,
                 body: JSON.stringify({
                     url: job.url,
                     model: job.model,
