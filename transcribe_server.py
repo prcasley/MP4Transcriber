@@ -10,9 +10,22 @@ Usage:
 
 import os
 import json
+import shutil
 import time
 import uuid
 import subprocess
+import sys
+
+# Auto-detect ffmpeg in common locations if not on PATH
+_FFMPEG_DIRS = [
+    os.path.join(os.environ.get("LOCALAPPDATA", ""), "ffmpeg", "bin"),
+    os.path.join(os.environ.get("ProgramFiles", ""), "ffmpeg", "bin"),
+    r"C:\ffmpeg\bin",
+]
+for _d in _FFMPEG_DIRS:
+    if os.path.isfile(os.path.join(_d, "ffmpeg.exe" if sys.platform == "win32" else "ffmpeg")):
+        os.environ["PATH"] = _d + os.pathsep + os.environ.get("PATH", "")
+        break
 import tempfile
 import threading
 from pathlib import Path
@@ -667,12 +680,7 @@ def health():
     except Exception:
         pass
 
-    ffmpeg_ok = False
-    try:
-        result = subprocess.run(["ffmpeg", "-version"], capture_output=True, text=True, timeout=5)
-        ffmpeg_ok = result.returncode == 0
-    except Exception:
-        pass
+    ffmpeg_ok = bool(shutil.which("ffmpeg"))
 
     # Check yt-dlp plugins
     plugins_info = ""
