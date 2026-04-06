@@ -15,13 +15,25 @@ import sys
 import json
 import time
 import argparse
+import threading
 from pathlib import Path
 from datetime import timedelta
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from faster_whisper import WhisperModel
 
+_thread_local = threading.local()
+_print_lock = threading.Lock()
+
 SUPPORTED = {'.mp4', '.mp3', '.wav', '.m4a', '.ogg', '.flac', '.webm',
              '.avi', '.mov', '.mkv', '.wma', '.aac', '.opus'}
+
+
+def get_or_create_model(model_name: str, device: str, compute_type: str) -> WhisperModel:
+    """Get a thread-local model instance, creating one if needed."""
+    if not hasattr(_thread_local, 'model') or _thread_local.model is None:
+        _thread_local.model = WhisperModel(model_name, device=device, compute_type=compute_type)
+    return _thread_local.model
 
 
 def format_timestamp(seconds: float) -> str:
@@ -57,16 +69,27 @@ def find_files(input_path: Path, recursive: bool = True) -> list[Path]:
     return files
 
 
-def transcribe_one(model: WhisperModel, file_path: Path, output_dir: Path,
-                    language: str | None, file_num: int, total: int) -> dict:
-    """Transcribe a single file and save outputs."""
+def transcribe_one(file_path: Path, output_dir: Path,
+                    language: str | None, file_num: int, total: int,
+                    model_name: str = "medium", device: str = "cpu",
+                    compute_type: str = "int8",
+                    model: WhisperModel | None = None) -> dict:
+    """Transcribe a single file and save outputs.
+
+    If `model` is provided directly it is used as-is (single-worker mode).
+    Otherwise a thread-local model is obtained via get_or_create_model().
+    """
+    if model is None:
+        model = get_or_create_model(model_name, device, compute_type)
+
     stem = file_path.stem
     safe_stem = "".join(c if c.isalnum() or c in "-_ " else "_" for c in stem)
 
-    print(f"\n{'='*70}")
-    print(f"  [{file_num}/{total}] {file_path.name}")
-    print(f"  Size: {file_path.stat().st_size / (1024*1024):.1f} MB")
-    print(f"{'='*70}")
+    with _print_lock:
+        print(f"\n{'='*70}")
+        print(f"  [{file_num}/{total}] {file_path.name}")
+        print(f"  Size: {file_path.stat().st_size / (1024*1024):.1f} MB")
+        print(f"{'='*70}")
 
     start_time = time.time()
 
@@ -79,9 +102,10 @@ def transcribe_one(model: WhisperModel, file_path: Path, output_dir: Path,
     )
 
     duration = info.duration or 0
-    print(f"  Language: {info.language} ({info.language_probability:.0%} confidence)")
-    print(f"  Audio duration: {format_duration(duration)}")
-    print(f"  Transcribing", end="", flush=True)
+    with _print_lock:
+        print(f"  Language: {info.language} ({info.language_probability:.0%} confidence)")
+        print(f"  Audio duration: {format_duration(duration)}")
+        print(f"  Transcribing", end="", flush=True)
 
     full_text_parts = []
     srt_parts = []
@@ -99,7 +123,8 @@ def transcribe_one(model: WhisperModel, file_path: Path, output_dir: Path,
         if duration > 0:
             pct = int((segment.end / duration) * 100)
             if pct >= last_pct + 10:
-                print(f" {pct}%", end="", flush=True)
+                with _print_lock:
+                    print(f" {pct}%", end="", flush=True)
                 last_pct = pct
 
         full_text_parts.append(text)
@@ -117,8 +142,9 @@ def transcribe_one(model: WhisperModel, file_path: Path, output_dir: Path,
 
     elapsed = time.time() - start_time
     speed_ratio = duration / elapsed if elapsed > 0 else 0
-    print(f"\n  Done in {format_duration(elapsed)} ({speed_ratio:.1f}x realtime)")
-    print(f"  {seg_index} segments extracted")
+    with _print_lock:
+        print(f"\n  Done in {format_duration(elapsed)} ({speed_ratio:.1f}x realtime)")
+        print(f"  {seg_index} segments extracted")
 
     # Save outputs
     full_text = " ".join(full_text_parts)
@@ -138,7 +164,8 @@ def transcribe_one(model: WhisperModel, file_path: Path, output_dir: Path,
         json.dumps(json_result, indent=2, ensure_ascii=False), encoding="utf-8"
     )
 
-    print(f"  Saved: {safe_stem}.txt / .srt / .json")
+    with _print_lock:
+        print(f"  Saved: {safe_stem}.txt / .srt / .json")
 
     return {
         "file": file_path.name,
@@ -167,6 +194,8 @@ def main():
                         help="Don't search subdirectories")
     parser.add_argument("--gpu", action="store_true",
                         help="Use GPU (CUDA) for transcription")
+    parser.add_argument("--workers", type=int, default=1,
+                        help="Number of parallel transcription workers (default: 1)")
     args = parser.parse_args()
 
     input_path = Path(args.input)
@@ -201,34 +230,74 @@ def main():
     total_size_mb = sum(f.stat().st_size for f in files) / (1024 * 1024)
 
     print(f"\n  TranscribeHQ — Batch Mode")
-    print(f"  {'─'*40}")
+    print(f"  {'-'*40}")
     print(f"  Files:   {len(files)}")
     print(f"  Total:   {total_size_mb:.0f} MB")
     print(f"  Model:   {args.model}")
     print(f"  Device:  {'GPU (CUDA)' if args.gpu else 'CPU'}")
     print(f"  Output:  {output_dir.resolve()}")
-    print(f"  {'─'*40}")
+    print(f"  {'-'*40}")
 
-    # Load model
-    print(f"\n  Loading {args.model} model...")
+    # Setup device
     device = "cuda" if args.gpu else "cpu"
     compute_type = "float16" if args.gpu else "int8"
-    model = WhisperModel(args.model, device=device, compute_type=compute_type)
-    print(f"  Model loaded on {device}")
+    effective_workers = max(1, args.workers)
 
     # Process files
     batch_start = time.time()
     results = []
     errors = []
 
-    for i, file_path in enumerate(files, 1):
-        try:
-            result = transcribe_one(model, file_path, output_dir,
-                                    args.language, i, len(files))
-            results.append(result)
-        except Exception as e:
-            print(f"\n  ERROR on {file_path.name}: {e}")
-            errors.append({"file": file_path.name, "error": str(e)})
+    if effective_workers == 1:
+        # Sequential mode: single model load, same behavior as before
+        print(f"\n  Loading {args.model} model...")
+        model = WhisperModel(args.model, device=device, compute_type=compute_type)
+        print(f"  Model loaded on {device}")
+
+        for i, file_path in enumerate(files, 1):
+            try:
+                result = transcribe_one(file_path, output_dir,
+                                        args.language, i, len(files),
+                                        model=model)
+                results.append(result)
+            except Exception as e:
+                print(f"\n  ERROR on {file_path.name}: {e}")
+                errors.append({"file": file_path.name, "error": str(e)})
+    else:
+        # Parallel mode
+        if args.gpu:
+            print(f"\n  WARNING: Using {effective_workers} workers with GPU. "
+                  f"Each worker loads a separate model — ensure sufficient VRAM!")
+        print(f"\n  Starting {effective_workers} parallel workers...")
+        print(f"  Each worker will load its own {args.model} model on {device}")
+
+        completed_count = 0
+        completed_lock = threading.Lock()
+
+        def _worker(file_path: Path, file_num: int) -> dict:
+            nonlocal completed_count
+            result = transcribe_one(file_path, output_dir,
+                                    args.language, file_num, len(files),
+                                    model_name=args.model, device=device,
+                                    compute_type=compute_type)
+            with completed_lock:
+                completed_count += 1
+                with _print_lock:
+                    print(f"\n  [{completed_count}/{len(files)} files done]")
+            return result
+
+        with ThreadPoolExecutor(max_workers=effective_workers) as executor:
+            future_to_file = {
+                executor.submit(_worker, fp, i): fp
+                for i, fp in enumerate(files, 1)
+            }
+            for future in as_completed(future_to_file):
+                fp = future_to_file[future]
+                try:
+                    results.append(future.result())
+                except Exception as e:
+                    print(f"\n  ERROR on {fp.name}: {e}")
+                    errors.append({"file": fp.name, "error": str(e)})
 
     # Summary
     batch_elapsed = time.time() - batch_start
@@ -253,6 +322,7 @@ def main():
         "batch_completed": time.strftime("%Y-%m-%d %H:%M:%S"),
         "model": args.model,
         "device": device,
+        "workers": effective_workers,
         "files_processed": len(results),
         "files_errored": len(errors),
         "total_audio_seconds": round(total_audio, 1),
