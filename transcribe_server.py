@@ -365,7 +365,11 @@ def classify_url(url: str) -> str:
         ".avi", ".mkv", ".mov", ".wma", ".aac", ".opus"
     ]):
         return "direct"
-    elif any(d in url_lower for d in ["sharepoint.com", "onedrive.live.com", "1drv.ms"]):
+    elif any(d in url_lower for d in [
+        "sharepoint.com", "onedrive.live.com", "1drv.ms",
+        "my.sharepoint.com", "sharepoint.com/:v:",
+        "sharepoint.com/:u:", "sharepoint.com/:a:",
+    ]):
         return "sharepoint"
     else:
         return "yt-dlp-generic"
@@ -426,14 +430,105 @@ def download_from_fathom(url: str, tmp_dir: str) -> dict:
 
 def download_direct(url: str, tmp_dir: str) -> str:
     """Download a direct file URL."""
-    resp = http_requests.get(url, stream=True, timeout=120)
+    resp = http_requests.get(url, stream=True, timeout=120, allow_redirects=True)
     if resp.status_code != 200:
         raise RuntimeError(f"Failed to download (HTTP {resp.status_code})")
+    # Detect content type to avoid saving HTML pages as video
+    content_type = resp.headers.get("Content-Type", "")
+    if "text/html" in content_type:
+        raise RuntimeError("URL returned HTML instead of a media file — may require authentication")
     ext = Path(url.split("?")[0]).suffix or ".mp4"
     out_path = os.path.join(tmp_dir, f"audio{ext}")
     with open(out_path, "wb") as f:
         for chunk in resp.iter_content(chunk_size=8192):
             f.write(chunk)
+    return out_path
+
+
+def resolve_sharepoint_download_url(sharing_url: str) -> str:
+    """Convert a SharePoint/OneDrive sharing link to a direct download URL.
+
+    SharePoint anonymous sharing links (e.g. https://tenant.sharepoint.com/:v:/s/site/Exxxx)
+    redirect to a viewer page. This converts them to direct download URLs using the
+    SharePoint API's download endpoint.
+    """
+    import base64
+
+    # Method 1: SharePoint sharing URL API encoding trick
+    # Encode the sharing URL to a token that SharePoint's API understands
+    # Base64url-encode the sharing URL, then use the shares endpoint
+    encoded = base64.urlsafe_b64encode(sharing_url.encode()).decode().rstrip("=")
+    share_token = "u!" + encoded
+
+    # Try the Graph-style driveItem download via the shares endpoint
+    # This works for anonymous links without authentication
+    api_url = f"https://api.onedrive.com/v1.0/shares/{share_token}/root/content"
+
+    # First do a HEAD request to get the redirect URL (actual file location)
+    resp = http_requests.head(api_url, allow_redirects=False, timeout=30)
+    if resp.status_code in (301, 302):
+        return resp.headers.get("Location", sharing_url)
+
+    # Method 2: Modify the SharePoint URL to force download
+    # For URLs like /:v:/s/site/Exxxx, append &download=1
+    if "sharepoint.com" in sharing_url:
+        sep = "&" if "?" in sharing_url else "?"
+        return sharing_url + sep + "download=1"
+
+    return sharing_url
+
+
+def download_from_sharepoint(url: str, tmp_dir: str) -> str:
+    """Download a file from a SharePoint/OneDrive sharing link."""
+    print(f"[TranscribeHQ] Resolving SharePoint sharing link...")
+
+    # Try to resolve to a direct download URL
+    try:
+        download_url = resolve_sharepoint_download_url(url)
+        print(f"[TranscribeHQ] Resolved to download URL")
+    except Exception as e:
+        print(f"[TranscribeHQ] Could not resolve sharing link: {e}")
+        download_url = url
+
+    # Download with redirect following
+    resp = http_requests.get(download_url, stream=True, timeout=300, allow_redirects=True)
+    if resp.status_code != 200:
+        raise RuntimeError(f"SharePoint download failed (HTTP {resp.status_code})")
+
+    # Check we got actual media, not an HTML viewer page
+    content_type = resp.headers.get("Content-Type", "")
+    if "text/html" in content_type:
+        # Last resort: try appending download=1 to original URL
+        sep = "&" if "?" in url else "?"
+        resp = http_requests.get(url + sep + "download=1", stream=True, timeout=300, allow_redirects=True)
+        if resp.status_code != 200 or "text/html" in resp.headers.get("Content-Type", ""):
+            raise RuntimeError(
+                "SharePoint returned a viewer page instead of the file. "
+                "The sharing link may require sign-in. Ensure the link is set to "
+                "'Anyone with the link' (anonymous access)."
+            )
+
+    # Determine extension from Content-Disposition or URL
+    ext = ".mp4"
+    cd = resp.headers.get("Content-Disposition", "")
+    if "filename=" in cd:
+        fname = cd.split("filename=")[-1].strip('" ')
+        ext = Path(fname).suffix or ext
+    elif Path(url.split("?")[0]).suffix:
+        ext = Path(url.split("?")[0]).suffix
+
+    out_path = os.path.join(tmp_dir, f"sharepoint_audio{ext}")
+    total_bytes = 0
+    with open(out_path, "wb") as f:
+        for chunk in resp.iter_content(chunk_size=65536):
+            f.write(chunk)
+            total_bytes += len(chunk)
+
+    print(f"[TranscribeHQ] Downloaded {total_bytes / (1024*1024):.1f} MB from SharePoint")
+
+    if total_bytes < 1000:
+        raise RuntimeError("Downloaded file is too small — likely not a valid media file")
+
     return out_path
 
 
@@ -521,10 +616,7 @@ def transcribe_url_job(job_id: str, url: str, groq_model: str, language: str | N
             elif source_type == "direct":
                 audio_path = download_direct(url, tmp_dir)
             elif source_type == "sharepoint":
-                try:
-                    audio_path = download_direct(url, tmp_dir)
-                except Exception:
-                    audio_path = download_with_ytdlp(url, tmp_dir)
+                audio_path = download_from_sharepoint(url, tmp_dir)
             else:
                 raise RuntimeError(f"Unsupported URL type: {source_type}")
 

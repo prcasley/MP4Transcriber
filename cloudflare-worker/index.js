@@ -74,8 +74,8 @@ async function handleTranscribe(request, env) {
       // Fall through to Render server if no API key
     }
 
-    // ── YouTube / video platforms: route to Render server (yt-dlp) ──
-    if (sourceType === "platform" || sourceType === "fathom") {
+    // ── YouTube / video platforms / SharePoint: route to Render server ──
+    if (sourceType === "platform" || sourceType === "fathom" || sourceType === "sharepoint") {
       if (!env.RENDER_URL) {
         throw new Error("Video platform transcription server is not configured. Contact the site admin.");
       }
@@ -129,7 +129,7 @@ async function handleTranscribe(request, env) {
 // ── Poll Render server for job completion ────────────────────
 
 async function pollRenderJob(renderUrl, jobId, sourceType) {
-  const maxWait = 120000; // 2 minutes max
+  const maxWait = 300000; // 5 minutes max (SharePoint downloads + large files need time)
   const start = Date.now();
 
   while (Date.now() - start < maxWait) {
