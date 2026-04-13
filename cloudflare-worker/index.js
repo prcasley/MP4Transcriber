@@ -80,9 +80,14 @@ async function handleTranscribe(request, env) {
         throw new Error("Video platform transcription server is not configured. Contact the site admin.");
       }
 
+      const renderHeaders = { "Content-Type": "application/json" };
+      // RENDER_API_KEY is the key for the Render server (separate from TRANSCRIBE_API_KEY which guards this Worker)
+      const renderKey = env.RENDER_API_KEY || env.TRANSCRIBE_API_KEY;
+      if (renderKey) renderHeaders["X-API-Key"] = renderKey;
+
       const renderResp = await fetch(`${env.RENDER_URL}/api/transcribe-url`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: renderHeaders,
         body: JSON.stringify({ url: sourceUrl, model, language }),
       });
 

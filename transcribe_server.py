@@ -260,6 +260,312 @@ def upload():
     return jsonify({"job_id": job_id, "filename": file.filename})
 
 
+# ── Chunked upload for Power Automate / Office Scripts ──────────────
+
+import base64
+
+# In-memory storage for chunked upload sessions
+upload_sessions: dict[str, dict] = {}
+
+
+@app.route("/api/upload-base64", methods=["POST"])
+@require_api_key
+def upload_base64():
+    """Upload a file as base64 JSON (for Office Scripts / Power Automate).
+
+    For small files (< 4MB base64 string). For larger files use chunked upload.
+    Body: { "filename": "video.mp4", "data": "<base64>", "model": "whisper-large-v3-turbo", "language": "en" }
+    """
+    data = request.get_json(force=True)
+    filename = data.get("filename", "upload.mp4")
+    b64_data = data.get("data", "")
+    model_size = data.get("model", "whisper-large-v3-turbo")
+    language = data.get("language", "").strip() or None
+
+    if not b64_data:
+        return jsonify({"error": "No data provided"}), 400
+
+    ext = Path(filename).suffix.lower()
+    if ext not in ALLOWED_EXTENSIONS:
+        return jsonify({"error": f"Unsupported format: {ext}"}), 400
+
+    try:
+        file_bytes = base64.b64decode(b64_data)
+    except Exception:
+        return jsonify({"error": "Invalid base64 data"}), 400
+
+    job_id = str(uuid.uuid4())[:8]
+    safe_name = f"{job_id}_{filename}"
+    file_path = str(UPLOAD_DIR / safe_name)
+    with open(file_path, "wb") as f:
+        f.write(file_bytes)
+
+    jobs[job_id] = {
+        "id": job_id,
+        "filename": filename,
+        "model": model_size,
+        "language": language,
+        "status": "queued",
+        "progress": 0,
+        "created": time.time(),
+        "result": None,
+        "error": None,
+        "mode": "base64",
+    }
+
+    # Groq cloud models (whisper-*) use Groq API; local models use faster-whisper
+    if model_size.startswith("whisper"):
+        _start_groq_file_job(job_id, file_path, model_size, language)
+    else:
+        thread = threading.Thread(
+            target=transcribe_file,
+            args=(job_id, file_path, model_size, language),
+            daemon=True,
+        )
+        thread.start()
+
+    return jsonify({"job_id": job_id, "filename": filename})
+
+
+@app.route("/api/upload-chunked/start", methods=["POST"])
+@require_api_key
+def chunked_start():
+    """Start a chunked upload session.
+
+    Body: { "filename": "video.mp4", "totalChunks": 10, "model": "whisper-large-v3-turbo", "language": "en" }
+    Returns: { "session_id": "..." }
+    """
+    data = request.get_json(force=True)
+    filename = data.get("filename", "upload.mp4")
+    total_chunks = data.get("totalChunks", 1)
+    model = data.get("model", "whisper-large-v3-turbo")
+    language = data.get("language", "").strip() or None
+
+    ext = Path(filename).suffix.lower()
+    if ext not in ALLOWED_EXTENSIONS:
+        return jsonify({"error": f"Unsupported format: {ext}"}), 400
+
+    session_id = str(uuid.uuid4())[:8]
+    upload_sessions[session_id] = {
+        "filename": filename,
+        "total_chunks": total_chunks,
+        "received_chunks": {},
+        "model": model,
+        "language": language,
+        "created": time.time(),
+    }
+
+    print(f"[TranscribeHQ] Chunked upload session {session_id}: {filename} ({total_chunks} chunks)")
+    return jsonify({"session_id": session_id, "filename": filename})
+
+
+@app.route("/api/upload-chunked/chunk", methods=["POST"])
+@require_api_key
+def chunked_upload():
+    """Upload a single chunk (base64).
+
+    Body: { "session_id": "...", "chunkIndex": 0, "data": "<base64>" }
+    """
+    data = request.get_json(force=True)
+    session_id = data.get("session_id", "")
+    chunk_index = data.get("chunkIndex", 0)
+    b64_data = data.get("data", "")
+
+    session = upload_sessions.get(session_id)
+    if not session:
+        return jsonify({"error": "Invalid or expired session ID"}), 404
+
+    try:
+        chunk_bytes = base64.b64decode(b64_data)
+    except Exception:
+        return jsonify({"error": "Invalid base64 data"}), 400
+
+    session["received_chunks"][chunk_index] = chunk_bytes
+    received = len(session["received_chunks"])
+    total = session["total_chunks"]
+
+    print(f"[TranscribeHQ] Session {session_id}: chunk {chunk_index + 1}/{total} ({len(chunk_bytes)} bytes)")
+    return jsonify({
+        "session_id": session_id,
+        "chunkIndex": chunk_index,
+        "received": received,
+        "total": total,
+    })
+
+
+@app.route("/api/upload-chunked/complete", methods=["POST"])
+@require_api_key
+def chunked_complete():
+    """Finalize a chunked upload and start transcription.
+
+    Body: { "session_id": "..." }
+    Returns: { "job_id": "...", "filename": "..." }
+    """
+    data = request.get_json(force=True)
+    session_id = data.get("session_id", "")
+
+    session = upload_sessions.get(session_id)
+    if not session:
+        return jsonify({"error": "Invalid or expired session ID"}), 404
+
+    received = len(session["received_chunks"])
+    total = session["total_chunks"]
+    if received < total:
+        return jsonify({
+            "error": f"Missing chunks: received {received}/{total}",
+            "received": received,
+            "total": total,
+        }), 400
+
+    # Reassemble file from chunks in order
+    file_bytes = b""
+    for i in range(total):
+        chunk = session["received_chunks"].get(i)
+        if chunk is None:
+            return jsonify({"error": f"Missing chunk {i}"}), 400
+        file_bytes += chunk
+
+    filename = session["filename"]
+    model = session["model"]
+    language = session["language"]
+
+    # Save assembled file
+    job_id = str(uuid.uuid4())[:8]
+    safe_name = f"{job_id}_{filename}"
+    file_path = str(UPLOAD_DIR / safe_name)
+    with open(file_path, "wb") as f:
+        f.write(file_bytes)
+
+    file_size_mb = len(file_bytes) / (1024 * 1024)
+    print(f"[TranscribeHQ] Session {session_id} complete: {filename} ({file_size_mb:.1f} MB) -> job {job_id}")
+
+    # Clean up session
+    del upload_sessions[session_id]
+
+    # Create job and start transcription
+    jobs[job_id] = {
+        "id": job_id,
+        "filename": filename,
+        "model": model,
+        "language": language,
+        "status": "queued",
+        "progress": 0,
+        "created": time.time(),
+        "result": None,
+        "error": None,
+        "mode": "chunked_upload",
+        "file_size_mb": round(file_size_mb, 1),
+    }
+
+    _start_groq_file_job(job_id, file_path, model, language)
+
+    return jsonify({"job_id": job_id, "filename": filename, "file_size_mb": round(file_size_mb, 1)})
+
+
+def _start_groq_file_job(job_id: str, file_path: str, model: str, language: str | None):
+    """Transcribe an uploaded file via Groq API (extract audio, chunk, send)."""
+    def _run():
+        job = jobs[job_id]
+        try:
+            job["status"] = "transcribing"
+            job["progress"] = 5
+
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                # Extract audio to MP3 (shrinks video files dramatically)
+                audio_path = os.path.join(tmp_dir, "audio.mp3")
+                job["progress"] = 10
+                print(f"[TranscribeHQ] Job {job_id}: extracting audio...")
+
+                ffmpeg_result = subprocess.run(
+                    ["ffmpeg", "-y", "-i", file_path, "-vn", "-acodec", "libmp3lame",
+                     "-q:a", "5", audio_path],
+                    capture_output=True, text=True, timeout=600,
+                )
+                if ffmpeg_result.returncode != 0 or not os.path.exists(audio_path):
+                    # If ffmpeg fails, try using the original file directly
+                    audio_path = file_path
+
+                audio_size = os.path.getsize(audio_path) / (1024 * 1024)
+                print(f"[TranscribeHQ] Job {job_id}: audio extracted ({audio_size:.1f} MB)")
+
+                # Chunk if needed
+                job["progress"] = 20
+                chunks = chunk_audio(audio_path, tmp_dir)
+
+                # Transcribe each chunk via Groq
+                all_segments = []
+                full_text_parts = []
+                detected_lang = language or "auto"
+
+                for i, chunk_path in enumerate(chunks):
+                    pct = 20 + int(((i + 1) / len(chunks)) * 75)
+                    job["progress"] = min(95, pct)
+
+                    groq_result = groq_transcribe(chunk_path, model, language)
+                    text = groq_result.get("text", "").strip()
+                    if text:
+                        full_text_parts.append(text)
+
+                    for seg in groq_result.get("segments", []):
+                        all_segments.append({
+                            "index": len(all_segments) + 1,
+                            "start": round(seg.get("start", 0), 2),
+                            "end": round(seg.get("end", 0), 2),
+                            "text": (seg.get("text", "")).strip(),
+                        })
+
+                    if groq_result.get("language"):
+                        detected_lang = groq_result["language"]
+
+                    # Rate limit: 3s between chunks
+                    if i < len(chunks) - 1:
+                        time.sleep(3)
+
+                # Build result
+                full_text = " ".join(full_text_parts)
+                srt_parts = []
+                for idx, s in enumerate(all_segments, 1):
+                    srt_parts.append(
+                        f"{idx}\n"
+                        f"{format_timestamp(s['start'])} --> {format_timestamp(s['end'])}\n"
+                        f"{s['text']}\n"
+                    )
+
+                duration = all_segments[-1]["end"] if all_segments else 0
+
+                # Save to output dir
+                stem = Path(file_path).stem
+                safe_stem = "".join(c if c.isalnum() or c in "-_ " else "_" for c in stem)
+                (OUTPUT_DIR / f"{safe_stem}.txt").write_text(full_text, encoding="utf-8")
+                (OUTPUT_DIR / f"{safe_stem}.srt").write_text("\n".join(srt_parts), encoding="utf-8")
+
+                job["status"] = "completed"
+                job["progress"] = 100
+                job["result"] = {
+                    "text": full_text,
+                    "srt": "\n".join(srt_parts),
+                    "json": {"segments": all_segments, "language": detected_lang,
+                             "duration_seconds": round(duration, 2)},
+                    "segment_count": len(all_segments),
+                    "duration": round(duration, 2),
+                    "language": detected_lang,
+                    "chunks_processed": len(chunks),
+                }
+
+        except Exception as e:
+            job["status"] = "error"
+            job["error"] = str(e)
+            print(f"[TranscribeHQ] Groq file job error {job_id}: {e}")
+        finally:
+            try:
+                os.remove(file_path)
+            except OSError:
+                pass
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+
+
 @app.route("/api/status/<job_id>")
 def status(job_id: str):
     """Get job status."""
