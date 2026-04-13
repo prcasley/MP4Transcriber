@@ -689,7 +689,7 @@ def download_with_ytdlp(url: str, tmp_dir: str) -> str:
         "-x", "--audio-format", "mp3", "--audio-quality", "5",
         "--max-filesize", "500m",
         "-o", output_template,
-        "--extractor-args", "youtube:player_client=tv_embedded,web",
+        "--extractor-args", "youtube:player_client=android,tv_embedded,web",
         "--no-warnings", "--quiet",
         url
     ]
