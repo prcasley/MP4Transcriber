@@ -761,7 +761,7 @@ def download_with_ytdlp(url: str, tmp_dir: str) -> str:
     if YOUTUBE_COOKIES_PATH:
         base_cmd += ["--cookies", YOUTUBE_COOKIES_PATH]
     if is_youtube:
-        base_cmd += ["--extractor-args", "youtube:player_client=android,web"]
+        base_cmd += ["--extractor-args", "youtube:player_client=android,web,web_creator,tv_embedded"]
 
     # Try format selectors in order — different videos expose different formats
     format_attempts = [
@@ -772,24 +772,78 @@ def download_with_ytdlp(url: str, tmp_dir: str) -> str:
     ]
 
     errors = []
-    for fmt in format_attempts:
+    for attempt_num, fmt in enumerate(format_attempts, start=1):
         cmd = base_cmd + fmt + [url]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
         if result.returncode == 0:
             for f in Path(tmp_dir).iterdir():
                 if f.suffix in [".mp3", ".m4a", ".wav", ".ogg", ".webm", ".opus", ".flac"]:
                     return str(f)
-            errors.append("yt-dlp succeeded but no audio file found")
+            errors.append(f"Attempt {attempt_num}: yt-dlp succeeded but no audio file found")
             continue
-        errors.append((result.stderr or result.stdout or "").strip()[:500])
+        stderr_text = (result.stderr or "").strip()
+        stdout_text = (result.stdout or "").strip()
+        combined_error = "\n".join(
+            part for part in [stderr_text, stdout_text] if part
+        ) or "no stderr/stdout output"
+        errors.append(
+            f"Attempt {attempt_num} command: {' '.join(cmd)}\n"
+            f"{combined_error[:1200]}"
+        )
+
+    # Final fallback: plain media download, then extract audio with ffmpeg
+    plain_cmd = ["yt-dlp", "--no-playlist", "--max-filesize", "500m", "-o", output_template]
+    if YOUTUBE_COOKIES_PATH:
+        plain_cmd += ["--cookies", YOUTUBE_COOKIES_PATH]
+    if is_youtube:
+        plain_cmd += ["--extractor-args", "youtube:player_client=android,web,web_creator,tv_embedded"]
+    plain_cmd += [url]
+
+    plain_result = subprocess.run(plain_cmd, capture_output=True, text=True, timeout=600)
+    if plain_result.returncode == 0:
+        downloaded_media = None
+        for f in Path(tmp_dir).iterdir():
+            if f.suffix.lower() not in [".part", ".ytdl"]:
+                downloaded_media = f
+                break
+        if downloaded_media:
+            extracted_audio = Path(tmp_dir) / "audio_fallback.mp3"
+            ffmpeg_result = subprocess.run(
+                [
+                    "ffmpeg", "-y", "-i", str(downloaded_media),
+                    "-vn", "-acodec", "libmp3lame", "-q:a", "5", str(extracted_audio),
+                ],
+                capture_output=True, text=True, timeout=600
+            )
+            if ffmpeg_result.returncode == 0 and extracted_audio.exists():
+                return str(extracted_audio)
+            errors.append(
+                "Plain download succeeded but ffmpeg audio extraction failed:\n"
+                + ((ffmpeg_result.stderr or ffmpeg_result.stdout or "").strip()[:1200])
+            )
+        else:
+            errors.append("Plain download succeeded but no media file was found")
+    else:
+        errors.append(
+            "Plain download fallback failed:\n"
+            + ((plain_result.stderr or plain_result.stdout or "").strip()[:1200])
+        )
 
     # Run --list-formats for diagnostics
+    list_formats_cmd = ["yt-dlp", "--list-formats"]
+    if YOUTUBE_COOKIES_PATH:
+        list_formats_cmd += ["--cookies", YOUTUBE_COOKIES_PATH]
+    if is_youtube:
+        list_formats_cmd += ["--extractor-args", "youtube:player_client=android,web,web_creator,tv_embedded"]
+    list_formats_cmd += [url]
     fmt_result = subprocess.run(
-        ["yt-dlp", "--list-formats", url], capture_output=True, text=True, timeout=60
+        list_formats_cmd, capture_output=True, text=True, timeout=120
     )
-    fmt_info = (fmt_result.stdout or fmt_result.stderr or "").strip()[-800:]
+    fmt_info = (fmt_result.stdout or fmt_result.stderr or "").strip()[:2000]
     raise RuntimeError(
-        f"yt-dlp failed after all format attempts.\n\nLast error: {errors[-1]}\n\nAvailable formats:\n{fmt_info}"
+        "yt-dlp failed after all format attempts.\n\n"
+        f"Errors by attempt:\n\n" + "\n\n".join(errors) +
+        f"\n\nLIST_FORMATS:\n{fmt_info}"
     )
 
 
@@ -1188,9 +1242,16 @@ def health():
 
     # Check yt-dlp plugins
     plugins_info = ""
+    yt_po_token_plugin_detected = False
     try:
         result = subprocess.run(["yt-dlp", "--list-plugins"], capture_output=True, text=True, timeout=5)
-        plugins_info = (result.stdout + result.stderr).strip()[:300]
+        plugins_raw = (result.stdout + result.stderr).strip()
+        plugins_info = plugins_raw[:300]
+        lower_plugins = plugins_raw.lower()
+        yt_po_token_plugin_detected = any(
+            token in lower_plugins
+            for token in ["po token", "potoken", "po_token", "youtube po token"]
+        )
     except Exception:
         plugins_info = "could not check"
 
@@ -1210,6 +1271,7 @@ def health():
         "fathom_key_set": bool(FATHOM_API_KEY),
         "yt_dlp": ytdlp_version,
         "yt_dlp_plugins": plugins_info,
+        "youtube_po_token_plugin_detected": yt_po_token_plugin_detected,
         "node": node_version,
         "ffmpeg": "installed" if ffmpeg_ok else "missing",
         "auth_required": bool(TRANSCRIBE_API_KEY),
