@@ -41,6 +41,12 @@ try:
 except ImportError:
     WhisperModel = None  # Running in cloud mode (Render) — local transcription disabled
 
+try:
+    from youtube_transcript_api import YouTubeTranscriptApi, NoTranscriptFound, TranscriptsDisabled
+    YT_TRANSCRIPT_API = True
+except ImportError:
+    YT_TRANSCRIPT_API = False
+
 app = Flask(__name__, static_folder=".", static_url_path="")
 CORS(app)
 
@@ -681,6 +687,44 @@ def classify_url(url: str) -> str:
         return "yt-dlp-generic"
 
 
+def fetch_youtube_transcript(url: str) -> dict | None:
+    """Fetch YouTube captions directly — no audio download, no bot detection."""
+    if not YT_TRANSCRIPT_API:
+        return None
+    import re
+    match = re.search(r'(?:v=|youtu\.be/)([A-Za-z0-9_-]{11})', url)
+    if not match:
+        return None
+    video_id = match.group(1)
+    try:
+        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+        # Prefer manual English, then auto-generated English, then any
+        try:
+            transcript = transcript_list.find_manually_created_transcript(['en'])
+        except Exception:
+            try:
+                transcript = transcript_list.find_generated_transcript(['en'])
+            except Exception:
+                transcript = next(iter(transcript_list))
+        data = transcript.fetch()
+        full_text = " ".join(item['text'].replace('\n', ' ') for item in data)
+        srt_parts = []
+        for i, item in enumerate(data, 1):
+            start = item['start']
+            end = start + item['duration']
+            srt_parts.append(
+                f"{i}\n{format_timestamp(start)} --> {format_timestamp(end)}\n{item['text']}\n"
+            )
+        return {
+            "text": full_text,
+            "srt": "\n".join(srt_parts),
+            "language": transcript.language_code,
+        }
+    except Exception as e:
+        print(f"[YouTube transcript API] failed: {e}")
+        return None
+
+
 def download_with_ytdlp(url: str, tmp_dir: str) -> str:
     """Download audio from any yt-dlp supported site."""
     output_template = os.path.join(tmp_dir, "audio.%(ext)s")
@@ -918,6 +962,21 @@ def transcribe_url_job(job_id: str, url: str, groq_model: str, language: str | N
                     return
                 audio_path = result["audio_path"]
             elif source_type in ("youtube", "yt-dlp", "yt-dlp-generic"):
+                if source_type == "youtube":
+                    yt_transcript = fetch_youtube_transcript(url)
+                    if yt_transcript:
+                        job["status"] = "completed"
+                        job["progress"] = 100
+                        job["result"] = {
+                            "text": yt_transcript["text"],
+                            "srt": yt_transcript["srt"],
+                            "json": {"segments": [], "source": "youtube_transcript_api"},
+                            "segment_count": 0,
+                            "duration": 0,
+                            "language": yt_transcript["language"],
+                            "note": "Transcript fetched directly from YouTube captions",
+                        }
+                        return
                 audio_path = download_with_ytdlp(url, tmp_dir)
             elif source_type == "direct":
                 audio_path = download_direct(url, tmp_dir)
