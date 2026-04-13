@@ -52,6 +52,20 @@ CORS(app)
 
 TRANSCRIBE_API_KEY = os.environ.get("TRANSCRIBE_API_KEY", "")
 
+# Write YouTube cookies from env var to disk at startup (base64-encoded Netscape cookie file)
+YOUTUBE_COOKIES_PATH = None
+_yt_cookies_b64 = os.environ.get("YOUTUBE_COOKIES", "")
+if _yt_cookies_b64:
+    import base64
+    _cookies_path = "/tmp/yt_cookies.txt"
+    try:
+        with open(_cookies_path, "wb") as _f:
+            _f.write(base64.b64decode(_yt_cookies_b64))
+        YOUTUBE_COOKIES_PATH = _cookies_path
+        print(f"[YouTube] Cookies loaded from YOUTUBE_COOKIES env var → {_cookies_path}")
+    except Exception as _e:
+        print(f"[YouTube] Failed to write cookies: {_e}")
+
 
 def require_api_key(f):
     """API key middleware. Skipped if TRANSCRIBE_API_KEY is not set."""
@@ -732,8 +746,10 @@ def download_with_ytdlp(url: str, tmp_dir: str) -> str:
         "--max-filesize", "500m",
         "-o", output_template,
         "--no-warnings", "--quiet",
-        url
     ]
+    if YOUTUBE_COOKIES_PATH:
+        cmd += ["--cookies", YOUTUBE_COOKIES_PATH]
+    cmd.append(url)
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
     if result.returncode != 0:
         raise RuntimeError(f"yt-dlp failed: {result.stderr[:500]}")
