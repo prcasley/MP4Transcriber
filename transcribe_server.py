@@ -711,12 +711,16 @@ def fetch_youtube_transcript(url: str) -> dict | None:
         return None
     video_id = match.group(1)
     try:
-        # Pass cookies via a requests Session so Render's blocked IP can authenticate
-        session = None
+        # Pass cookies + browser headers so Render's datacenter IP isn't flagged
+        import requests as _requests
+        session = _requests.Session()
+        session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        })
         if YOUTUBE_COOKIES_PATH:
-            import requests as _requests
             from http.cookiejar import MozillaCookieJar
-            session = _requests.Session()
             jar = MozillaCookieJar(YOUTUBE_COOKIES_PATH)
             jar.load(ignore_discard=True, ignore_expires=True)
             session.cookies = jar
@@ -742,8 +746,8 @@ def fetch_youtube_transcript(url: str) -> dict | None:
             "language": fetched.language_code if hasattr(fetched, 'language_code') else "en",
         }
     except Exception as e:
-        print(f"[YouTube transcript API] failed: {e}")
-        return None
+        print(f"[YouTube transcript API] failed ({type(e).__name__}): {e}")
+        return {"error": f"{type(e).__name__}: {e}"}
 
 
 def download_with_ytdlp(url: str, tmp_dir: str) -> str:
@@ -761,7 +765,7 @@ def download_with_ytdlp(url: str, tmp_dir: str) -> str:
     if YOUTUBE_COOKIES_PATH:
         base_cmd += ["--cookies", YOUTUBE_COOKIES_PATH]
     if is_youtube:
-        base_cmd += ["--extractor-args", "youtube:player_client=android,web,web_creator,tv_embedded"]
+        base_cmd += ["--extractor-args", "youtube:player_client=android,web,web_creator"]
 
     # Try format selectors in order — different videos expose different formats
     format_attempts = [
@@ -1064,7 +1068,11 @@ def transcribe_url_job(job_id: str, url: str, groq_model: str, language: str | N
                 audio_path = result["audio_path"]
             elif source_type in ("youtube", "yt-dlp", "yt-dlp-generic"):
                 if source_type == "youtube":
+                    transcript_api_error = None
                     yt_transcript = fetch_youtube_transcript(url)
+                    if yt_transcript and "error" in yt_transcript:
+                        transcript_api_error = yt_transcript["error"]
+                        yt_transcript = None
                     if yt_transcript:
                         job["status"] = "completed"
                         job["progress"] = 100
@@ -1078,7 +1086,11 @@ def transcribe_url_job(job_id: str, url: str, groq_model: str, language: str | N
                             "note": "Transcript fetched directly from YouTube captions",
                         }
                         return
-                audio_path = download_with_ytdlp(url, tmp_dir)
+                try:
+                    audio_path = download_with_ytdlp(url, tmp_dir)
+                except RuntimeError as e:
+                    prefix = f"[Transcript API failed: {transcript_api_error}]\n\n" if transcript_api_error else ""
+                    raise RuntimeError(prefix + str(e))
             elif source_type == "direct":
                 audio_path = download_direct(url, tmp_dir)
             elif source_type == "sharepoint":
@@ -1266,7 +1278,7 @@ def health():
 
     return jsonify({
         "status": "ok" if (ytdlp_ok and GROQ_API_KEY) else "degraded",
-        "version": "2.1.4",
+        "version": "2.1.5",
         "groq_key_set": bool(GROQ_API_KEY),
         "fathom_key_set": bool(FATHOM_API_KEY),
         "yt_dlp": ytdlp_version,
