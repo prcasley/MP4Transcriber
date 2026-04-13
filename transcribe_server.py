@@ -711,7 +711,16 @@ def fetch_youtube_transcript(url: str) -> dict | None:
         return None
     video_id = match.group(1)
     try:
-        api = YouTubeTranscriptApi()
+        # Pass cookies via a requests Session so Render's blocked IP can authenticate
+        session = None
+        if YOUTUBE_COOKIES_PATH:
+            import requests as _requests
+            from http.cookiejar import MozillaCookieJar
+            session = _requests.Session()
+            jar = MozillaCookieJar(YOUTUBE_COOKIES_PATH)
+            jar.load(ignore_discard=True, ignore_expires=True)
+            session.cookies = jar
+        api = YouTubeTranscriptApi(http_client=session)
         # Try English first, fall back to any available language
         try:
             fetched = api.fetch(video_id, languages=['en'])
