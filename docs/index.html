@@ -943,5 +943,9 @@
         });
     }
     </script>
+    <div style="position:fixed;bottom:8px;right:12px;font-size:10px;color:rgba(255,255,255,0.18);pointer-events:none;z-index:9999" id="ver-display">v—</div>
+    <script>
+      fetch('/api/health').then(r=>r.json()).then(d=>{document.getElementById('ver-display').textContent='v'+(d.version||'?');}).catch(()=>{});
+    </script>
 </body>
 </html>
