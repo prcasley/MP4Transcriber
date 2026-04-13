@@ -749,25 +749,41 @@ def fetch_youtube_transcript(url: str) -> dict | None:
 def download_with_ytdlp(url: str, tmp_dir: str) -> str:
     """Download audio from any yt-dlp supported site."""
     output_template = os.path.join(tmp_dir, "audio.%(ext)s")
-    cmd = [
+    is_youtube = "youtube.com" in url or "youtu.be" in url
+
+    base_cmd = [
         "yt-dlp", "--no-playlist",
         "-x", "--audio-format", "mp3", "--audio-quality", "5",
-        "--format", "bestaudio/best",
         "--max-filesize", "500m",
         "-o", output_template,
         "--no-warnings", "--quiet",
     ]
     if YOUTUBE_COOKIES_PATH:
-        cmd += ["--cookies", YOUTUBE_COOKIES_PATH]
-    cmd.append(url)
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-    if result.returncode != 0:
-        raise RuntimeError(f"yt-dlp failed: {result.stderr[:500]}")
+        base_cmd += ["--cookies", YOUTUBE_COOKIES_PATH]
+    if is_youtube:
+        base_cmd += ["--extractor-args", "youtube:player_client=android,web"]
 
-    for f in Path(tmp_dir).iterdir():
-        if f.suffix in [".mp3", ".m4a", ".wav", ".ogg", ".webm", ".opus", ".flac"]:
-            return str(f)
-    raise RuntimeError("yt-dlp completed but no audio file found")
+    # Try format selectors in order — different videos expose different formats
+    format_attempts = [
+        ["--format", "bestaudio/best"],
+        ["--format", "best"],
+        ["--format", "bv*+ba/b"],
+        [],  # let yt-dlp pick
+    ]
+
+    errors = []
+    for fmt in format_attempts:
+        cmd = base_cmd + fmt + [url]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        if result.returncode == 0:
+            for f in Path(tmp_dir).iterdir():
+                if f.suffix in [".mp3", ".m4a", ".wav", ".ogg", ".webm", ".opus", ".flac"]:
+                    return str(f)
+            errors.append("yt-dlp succeeded but no audio file found")
+            continue
+        errors.append((result.stderr or result.stdout or "").strip()[:500])
+
+    raise RuntimeError("yt-dlp failed: " + errors[-1] if errors else "yt-dlp failed")
 
 
 def download_from_fathom(url: str, tmp_dir: str) -> dict:
@@ -1182,7 +1198,7 @@ def health():
 
     return jsonify({
         "status": "ok" if (ytdlp_ok and GROQ_API_KEY) else "degraded",
-        "version": "2.1.2",
+        "version": "2.1.3",
         "groq_key_set": bool(GROQ_API_KEY),
         "fathom_key_set": bool(FATHOM_API_KEY),
         "yt_dlp": ytdlp_version,
@@ -1191,6 +1207,7 @@ def health():
         "ffmpeg": "installed" if ffmpeg_ok else "missing",
         "auth_required": bool(TRANSCRIBE_API_KEY),
         "yt_transcript_api": YT_TRANSCRIPT_API,
+        "youtube_cookies_set": bool(YOUTUBE_COOKIES_PATH),
     })
 
 
