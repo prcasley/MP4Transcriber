@@ -743,6 +743,7 @@ def download_with_ytdlp(url: str, tmp_dir: str) -> str:
     cmd = [
         "yt-dlp", "--no-playlist",
         "-x", "--audio-format", "mp3", "--audio-quality", "5",
+        "--format", "bestaudio/best",
         "--max-filesize", "500m",
         "-o", output_template,
         "--no-warnings", "--quiet",
