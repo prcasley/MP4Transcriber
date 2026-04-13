@@ -18,7 +18,7 @@ const MAX_GROQ_SIZE = 25 * 1024 * 1024;
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type",
+  "Access-Control-Allow-Headers": "Content-Type, X-API-Key",
 };
 
 // Platforms that need yt-dlp (routed to Render server)
