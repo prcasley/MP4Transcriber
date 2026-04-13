@@ -42,7 +42,7 @@ except ImportError:
     WhisperModel = None  # Running in cloud mode (Render) — local transcription disabled
 
 try:
-    from youtube_transcript_api import YouTubeTranscriptApi, NoTranscriptFound, TranscriptsDisabled
+    from youtube_transcript_api import YouTubeTranscriptApi
     YT_TRANSCRIPT_API = True
 except ImportError:
     YT_TRANSCRIPT_API = False
@@ -697,28 +697,26 @@ def fetch_youtube_transcript(url: str) -> dict | None:
         return None
     video_id = match.group(1)
     try:
-        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
-        # Prefer manual English, then auto-generated English, then any
+        api = YouTubeTranscriptApi()
+        # Try English first, fall back to any available language
         try:
-            transcript = transcript_list.find_manually_created_transcript(['en'])
+            fetched = api.fetch(video_id, languages=['en'])
         except Exception:
-            try:
-                transcript = transcript_list.find_generated_transcript(['en'])
-            except Exception:
-                transcript = next(iter(transcript_list))
-        data = transcript.fetch()
-        full_text = " ".join(item['text'].replace('\n', ' ') for item in data)
+            transcript_list = api.list(video_id)
+            first = next(iter(transcript_list))
+            fetched = api.fetch(video_id, languages=[first.language_code])
+        snippets = fetched.snippets
+        full_text = " ".join(s.text.replace('\n', ' ') for s in snippets)
         srt_parts = []
-        for i, item in enumerate(data, 1):
-            start = item['start']
-            end = start + item['duration']
+        for i, s in enumerate(snippets, 1):
+            end = s.start + s.duration
             srt_parts.append(
-                f"{i}\n{format_timestamp(start)} --> {format_timestamp(end)}\n{item['text']}\n"
+                f"{i}\n{format_timestamp(s.start)} --> {format_timestamp(end)}\n{s.text}\n"
             )
         return {
             "text": full_text,
             "srt": "\n".join(srt_parts),
-            "language": transcript.language_code,
+            "language": fetched.language_code if hasattr(fetched, 'language_code') else "en",
         }
     except Exception as e:
         print(f"[YouTube transcript API] failed: {e}")
