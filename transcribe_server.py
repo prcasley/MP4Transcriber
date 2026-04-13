@@ -783,7 +783,14 @@ def download_with_ytdlp(url: str, tmp_dir: str) -> str:
             continue
         errors.append((result.stderr or result.stdout or "").strip()[:500])
 
-    raise RuntimeError("yt-dlp failed: " + errors[-1] if errors else "yt-dlp failed")
+    # Run --list-formats for diagnostics
+    fmt_result = subprocess.run(
+        ["yt-dlp", "--list-formats", url], capture_output=True, text=True, timeout=60
+    )
+    fmt_info = (fmt_result.stdout or fmt_result.stderr or "").strip()[-800:]
+    raise RuntimeError(
+        f"yt-dlp failed after all format attempts.\n\nLast error: {errors[-1]}\n\nAvailable formats:\n{fmt_info}"
+    )
 
 
 def download_from_fathom(url: str, tmp_dir: str) -> dict:
@@ -1198,7 +1205,7 @@ def health():
 
     return jsonify({
         "status": "ok" if (ytdlp_ok and GROQ_API_KEY) else "degraded",
-        "version": "2.1.3",
+        "version": "2.1.4",
         "groq_key_set": bool(GROQ_API_KEY),
         "fathom_key_set": bool(FATHOM_API_KEY),
         "yt_dlp": ytdlp_version,

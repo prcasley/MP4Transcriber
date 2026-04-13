@@ -943,9 +943,12 @@
         });
     }
     </script>
-    <div style="position:fixed;bottom:10px;right:14px;font-size:13px;color:rgba(255,255,255,0.55);pointer-events:none;z-index:9999;font-family:monospace" id="ver-display">v—</div>
+    <div style="position:fixed;bottom:12px;left:50%;transform:translateX(-50%);font-size:12px;color:rgba(255,255,255,0.6);pointer-events:none;z-index:9999;font-family:monospace;white-space:nowrap" id="ver-display">loading...</div>
     <script>
-      fetch('/api/health').then(r=>r.json()).then(d=>{document.getElementById('ver-display').textContent='v'+(d.version||'?');}).catch(()=>{});
+      fetch('https://transcribehq-server.onrender.com/api/health')
+        .then(r=>r.json())
+        .then(d=>{document.getElementById('ver-display').textContent='server v'+(d.version||'?')+' | cookies: '+(d.youtube_cookies_set?'✓':'✗');})
+        .catch(()=>{document.getElementById('ver-display').textContent='server offline';});
     </script>
 </body>
 </html>
