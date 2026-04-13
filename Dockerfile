@@ -5,7 +5,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg curl && 
     curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
     apt-get install -y --no-install-recommends nodejs && \
     rm -rf /var/lib/apt/lists/*
-RUN pip install --no-cache-dir yt-dlp requests flask flask-cors bgutil-ytdlp-pot-provider
+RUN pip install --no-cache-dir requests flask flask-cors bgutil-ytdlp-pot-provider && \
+    pip install --no-cache-dir "yt-dlp>=2026.3.17"
 
 WORKDIR /app
 COPY transcribe_server.py .
