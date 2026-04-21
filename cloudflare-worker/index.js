@@ -17,7 +17,7 @@ const MAX_GROQ_SIZE = 25 * 1024 * 1024;
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type, X-API-Key",
 };
 
@@ -34,6 +34,7 @@ export default {
     if (request.method === "OPTIONS") return new Response(null, { headers: CORS_HEADERS });
     const url = new URL(request.url);
     if (url.pathname === "/transcribe-url" && request.method === "POST") return handleTranscribe(request, env);
+    if (url.pathname === "/yt-transcript" && request.method === "GET") return handleYtTranscript(url, env);
     if (url.pathname === "/health") return jsonResponse({
       status: "ok",
       groq_key_set: !!env.GROQ_API_KEY,
@@ -72,6 +73,28 @@ async function handleTranscribe(request, env) {
         if (r) return jsonResponse({ transcript: r.transcript, source_type: "fathom", title: r.title, note: "Transcript from Fathom API (includes speaker names)" });
       }
       // Fall through to Render server if no API key
+    }
+
+    // ── YouTube: try transcript from edge first (bypasses IP block) ──
+    if (isYouTubeUrl(sourceUrl)) {
+      try {
+        const videoId = extractYouTubeId(sourceUrl);
+        if (videoId) {
+          const transcript = await fetchYouTubeTranscript(videoId);
+          return jsonResponse({
+            transcript: transcript.text,
+            srt: transcript.srt,
+            segments: [],
+            language: transcript.language,
+            duration: 0,
+            source_type: "youtube",
+            note: `Transcript fetched from YouTube captions (${transcript.segment_count} segments)`,
+          });
+        }
+      } catch (err) {
+        console.log(`[yt-transcript] Edge fetch failed: ${err.message}, falling back to Render`);
+        // Fall through to Render server
+      }
     }
 
     // ── YouTube / video platforms / SharePoint: route to Render server ──
@@ -241,4 +264,97 @@ async function transcribeWithGroq(blob, filename, model, language, apiKey) {
 
 function jsonResponse(data, status = 200) {
   return new Response(JSON.stringify(data), { status, headers: { "Content-Type": "application/json", ...CORS_HEADERS } });
+}
+
+// ── YouTube transcript (fetched from Cloudflare edge) ───────
+
+function isYouTubeUrl(url) {
+  const lower = url.toLowerCase();
+  return lower.includes("youtube.com") || lower.includes("youtu.be");
+}
+
+function extractYouTubeId(url) {
+  const m = url.match(/(?:v=|youtu\.be\/)([A-Za-z0-9_-]{11})/);
+  return m ? m[1] : null;
+}
+
+async function handleYtTranscript(url, env) {
+  // API key auth
+  if (env.TRANSCRIBE_API_KEY) {
+    const key = url.searchParams.get("api_key") || "";
+    if (key !== env.TRANSCRIBE_API_KEY) return jsonResponse({ error: "Unauthorized" }, 401);
+  }
+  const videoId = url.searchParams.get("v");
+  if (!videoId) return jsonResponse({ error: "Missing ?v=VIDEO_ID" }, 400);
+  try {
+    const transcript = await fetchYouTubeTranscript(videoId);
+    return jsonResponse(transcript);
+  } catch (err) {
+    return jsonResponse({ error: err.message }, 500);
+  }
+}
+
+async function fetchYouTubeTranscript(videoId) {
+  // Fetch YouTube page from Cloudflare edge (not blocked like cloud IPs)
+  const resp = await fetch(`https://www.youtube.com/watch?v=${videoId}`, {
+    headers: {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+      "Accept-Language": "en-US,en;q=0.9",
+      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    },
+  });
+  if (!resp.ok) throw new Error(`YouTube returned HTTP ${resp.status}`);
+  const html = await resp.text();
+
+  // Extract player response JSON from page
+  const prMatch = html.match(/var\s+ytInitialPlayerResponse\s*=\s*({.+?})\s*;/s);
+  if (!prMatch) throw new Error("Could not find player response in YouTube page");
+
+  let player;
+  try { player = JSON.parse(prMatch[1]); }
+  catch { throw new Error("Failed to parse YouTube player response"); }
+
+  const tracks = player?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+  if (!tracks || tracks.length === 0) throw new Error("No captions available for this video");
+
+  // Prefer English, fall back to first available
+  const track = tracks.find((t) => t.languageCode === "en") ||
+                tracks.find((t) => t.languageCode?.startsWith("en")) ||
+                tracks[0];
+
+  // Fetch the caption XML
+  const captUrl = track.baseUrl + "&fmt=srv3"; // srv3 = XML with timestamps
+  const captResp = await fetch(captUrl);
+  if (!captResp.ok) throw new Error(`Caption fetch failed: ${captResp.status}`);
+  const xml = await captResp.text();
+
+  // Parse XML: <text start="0.0" dur="1.5">Hello</text>
+  const segments = [];
+  const re = /<text\s+start="([^"]+)"\s+dur="([^"]+)"[^>]*>([\s\S]*?)<\/text>/g;
+  let m;
+  while ((m = re.exec(xml)) !== null) {
+    const start = parseFloat(m[1]);
+    const duration = parseFloat(m[2]);
+    const text = m[3]
+      .replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+      .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&nbsp;/g, " ")
+      .replace(/<[^>]+>/g, "").replace(/\n/g, " ").trim();
+    if (text) segments.push({ start, duration, text });
+  }
+  if (segments.length === 0) throw new Error("No transcript segments found in caption data");
+
+  const fullText = segments.map((s) => s.text).join(" ");
+  const srt = segments.map((s, i) => {
+    return `${i + 1}\n${fmtSrt(s.start)} --> ${fmtSrt(s.start + s.duration)}\n${s.text}\n`;
+  }).join("\n");
+
+  return { text: fullText, srt, language: track.languageCode, segment_count: segments.length };
+}
+
+function fmtSrt(sec) {
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = Math.floor(sec % 60);
+  const ms = Math.floor((sec % 1) * 1000);
+  return `${String(h).padStart(2,"0")}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")},${String(ms).padStart(3,"0")}`;
 }
