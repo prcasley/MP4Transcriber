@@ -295,40 +295,48 @@ async function handleYtTranscript(url, env) {
 }
 
 async function fetchYouTubeTranscript(videoId) {
-  // Fetch YouTube page from Cloudflare edge (not blocked like cloud IPs)
-  const resp = await fetch(`https://www.youtube.com/watch?v=${videoId}`, {
-    headers: {
-      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-      "Accept-Language": "en-US,en;q=0.9",
-      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    },
-  });
-  if (!resp.ok) throw new Error(`YouTube returned HTTP ${resp.status}`);
-  const html = await resp.text();
+  const INNERTUBE_CONTEXT = {
+    client: { clientName: "WEB", clientVersion: "2.20241126.01.00", hl: "en", gl: "US" },
+  };
 
-  // Extract player response JSON from page
-  const prMatch = html.match(/var\s+ytInitialPlayerResponse\s*=\s*({.+?})\s*;/s);
-  if (!prMatch) throw new Error("Could not find player response in YouTube page");
+  // Try multiple caption languages via YouTube's timedtext API
+  const langs = ["en", "en-US", "a.en"]; // a.en = auto-generated English
+  let xml = null;
+  let language = "en";
 
-  let player;
-  try { player = JSON.parse(prMatch[1]); }
-  catch { throw new Error("Failed to parse YouTube player response"); }
+  for (const lang of langs) {
+    const url = `https://www.youtube.com/api/timedtext?v=${videoId}&lang=${lang}&fmt=srv3`;
+    const resp = await fetch(url, {
+      headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36" },
+    });
+    if (resp.ok) {
+      const body = await resp.text();
+      if (body && body.includes("<text")) { xml = body; language = lang.replace("a.", ""); break; }
+    }
+  }
 
-  const tracks = player?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
-  if (!tracks || tracks.length === 0) throw new Error("No captions available for this video");
+  // If simple langs failed, try Innertube to discover available tracks
+  if (!xml) {
+    const playerResp = await fetch("https://www.youtube.com/youtubei/v1/player?prettyPrint=false", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36" },
+      body: JSON.stringify({ context: { client: { clientName: "WEB", clientVersion: "2.20241126.01.00", hl: "en", gl: "US" } }, videoId }),
+    });
+    if (playerResp.ok) {
+      const pd = await playerResp.json();
+      const tracks = pd?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+      if (tracks && tracks.length > 0) {
+        const track = tracks.find((t) => t.languageCode === "en") || tracks[0];
+        const captResp = await fetch(track.baseUrl + "&fmt=srv3", {
+          headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
+        });
+        if (captResp.ok) { xml = await captResp.text(); language = track.languageCode; }
+      }
+    }
+  }
 
-  // Prefer English, fall back to first available
-  const track = tracks.find((t) => t.languageCode === "en") ||
-                tracks.find((t) => t.languageCode?.startsWith("en")) ||
-                tracks[0];
-
-  // Fetch the caption XML
-  const captUrl = track.baseUrl + "&fmt=srv3"; // srv3 = XML with timestamps
-  const captResp = await fetch(captUrl);
-  if (!captResp.ok) throw new Error(`Caption fetch failed: ${captResp.status}`);
-  const xml = await captResp.text();
-
-  // Parse XML: <text start="0.0" dur="1.5">Hello</text>
+  if (!xml) throw new Error("No captions available for this video");
+  // Parse XML — <text start="0.0" dur="1.5">Hello</text>
   const segments = [];
   const re = /<text\s+start="([^"]+)"\s+dur="([^"]+)"[^>]*>([\s\S]*?)<\/text>/g;
   let m;
@@ -348,7 +356,7 @@ async function fetchYouTubeTranscript(videoId) {
     return `${i + 1}\n${fmtSrt(s.start)} --> ${fmtSrt(s.start + s.duration)}\n${s.text}\n`;
   }).join("\n");
 
-  return { text: fullText, srt, language: track.languageCode, segment_count: segments.length };
+  return { text: fullText, srt, language, segment_count: segments.length };
 }
 
 function fmtSrt(sec) {

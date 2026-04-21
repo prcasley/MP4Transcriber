@@ -66,6 +66,12 @@ if _yt_cookies_b64:
     except Exception as _e:
         print(f"[YouTube] Failed to write cookies: {_e}")
 
+# Webshare residential proxy for YouTube transcript API (bypasses cloud IP blocks)
+WEBSHARE_USER = os.environ.get("WEBSHARE_USER", "")
+WEBSHARE_PASS = os.environ.get("WEBSHARE_PASS", "")
+if WEBSHARE_USER:
+    print(f"[YouTube] Webshare proxy configured (user: {WEBSHARE_USER[:4]}...)")
+
 
 def require_api_key(f):
     """API key middleware. Skipped if TRANSCRIBE_API_KEY is not set."""
@@ -711,20 +717,15 @@ def fetch_youtube_transcript(url: str) -> dict | None:
         return None
     video_id = match.group(1)
     try:
-        # Pass cookies + browser headers so Render's datacenter IP isn't flagged
-        import requests as _requests
-        session = _requests.Session()
-        session.headers.update({
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        })
-        if YOUTUBE_COOKIES_PATH:
-            from http.cookiejar import MozillaCookieJar
-            jar = MozillaCookieJar(YOUTUBE_COOKIES_PATH)
-            jar.load(ignore_discard=True, ignore_expires=True)
-            session.cookies = jar
-        api = YouTubeTranscriptApi(http_client=session)
+        # Use Webshare residential proxy to bypass YouTube cloud IP blocks
+        proxy_config = None
+        if WEBSHARE_USER and WEBSHARE_PASS:
+            from youtube_transcript_api.proxies import WebshareProxyConfig
+            proxy_config = WebshareProxyConfig(
+                proxy_username=WEBSHARE_USER,
+                proxy_password=WEBSHARE_PASS,
+            )
+        api = YouTubeTranscriptApi(proxy_config=proxy_config)
         # Try English first, fall back to any available language
         try:
             fetched = api.fetch(video_id, languages=['en'])
@@ -1278,7 +1279,7 @@ def health():
 
     return jsonify({
         "status": "ok" if (ytdlp_ok and GROQ_API_KEY) else "degraded",
-        "version": "2.1.5",
+        "version": "2.2.0",
         "groq_key_set": bool(GROQ_API_KEY),
         "fathom_key_set": bool(FATHOM_API_KEY),
         "yt_dlp": ytdlp_version,
@@ -1289,6 +1290,7 @@ def health():
         "auth_required": bool(TRANSCRIBE_API_KEY),
         "yt_transcript_api": YT_TRANSCRIPT_API,
         "youtube_cookies_set": bool(YOUTUBE_COOKIES_PATH),
+        "webshare_proxy": bool(WEBSHARE_USER),
     })
 
 
