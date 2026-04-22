@@ -717,7 +717,29 @@ def fetch_youtube_transcript(url: str) -> dict | None:
         return None
     video_id = match.group(1)
     try:
-        # Use Webshare residential proxy to bypass YouTube cloud IP blocks
+        # Try Google Apps Script proxy first (free, uses Google's own IPs)
+        transcript_proxy = os.environ.get("TRANSCRIPT_PROXY_URL", "")
+        if transcript_proxy:
+            try:
+                proxy_url = f"{transcript_proxy}?v={video_id}"
+                proxy_key = os.environ.get("TRANSCRIPT_PROXY_KEY", "")
+                if proxy_key:
+                    proxy_url += f"&key={proxy_key}"
+                resp = http_requests.get(proxy_url, timeout=30)
+                if resp.ok:
+                    data = resp.json()
+                    if "error" not in data and data.get("text"):
+                        return {
+                            "text": data["text"],
+                            "srt": data.get("srt", ""),
+                            "language": data.get("language", "en"),
+                        }
+                    elif "error" in data:
+                        print(f"[YouTube proxy] error: {data['error']}")
+            except Exception as proxy_err:
+                print(f"[YouTube proxy] failed: {proxy_err}")
+
+        # Fallback: try youtube-transcript-api with optional Webshare proxy
         proxy_config = None
         if WEBSHARE_USER and WEBSHARE_PASS:
             from youtube_transcript_api.proxies import WebshareProxyConfig
@@ -1291,6 +1313,7 @@ def health():
         "yt_transcript_api": YT_TRANSCRIPT_API,
         "youtube_cookies_set": bool(YOUTUBE_COOKIES_PATH),
         "webshare_proxy": bool(WEBSHARE_USER),
+        "transcript_proxy": bool(os.environ.get("TRANSCRIPT_PROXY_URL", "")),
     })
 
 
