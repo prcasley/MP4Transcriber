@@ -34,6 +34,10 @@ export default {
     if (request.method === "OPTIONS") return new Response(null, { headers: CORS_HEADERS });
     const url = new URL(request.url);
     if (url.pathname === "/transcribe-url" && request.method === "POST") return handleTranscribe(request, env);
+    if (url.pathname.startsWith("/transcribe-status/") && request.method === "GET") {
+      const jobId = url.pathname.slice("/transcribe-status/".length);
+      return handleStatus(jobId, env);
+    }
     if (url.pathname === "/yt-transcript" && request.method === "GET") return handleYtTranscript(url, env);
     if (url.pathname === "/health") return jsonResponse({
       status: "ok",
@@ -121,9 +125,10 @@ async function handleTranscribe(request, env) {
 
       const renderData = await renderResp.json();
 
-      // The Render server returns a job_id — we need to poll for completion
+      // The Render server returns a job_id — return it so the browser can poll
+      // /transcribe-status/:id directly. (Avoids exhausting Worker subrequest budget.)
       if (renderData.job_id) {
-        return await pollRenderJob(env.RENDER_URL, renderData.job_id, sourceType);
+        return jsonResponse({ job_id: renderData.job_id, source_type: sourceType, polling: true });
       }
 
       // Or it might return the transcript directly
@@ -154,38 +159,18 @@ async function handleTranscribe(request, env) {
   }
 }
 
-// ── Poll Render server for job completion ────────────────────
+// ── Status proxy (browser polls this; we proxy to Render) ───
 
-async function pollRenderJob(renderUrl, jobId, sourceType) {
-  const maxWait = 300000; // 5 minutes max (SharePoint downloads + large files need time)
-  const start = Date.now();
-
-  while (Date.now() - start < maxWait) {
-    const resp = await fetch(`${renderUrl}/api/status/${jobId}`);
-    if (!resp.ok) throw new Error("Failed to check transcription status.");
-
-    const job = await resp.json();
-
-    if (job.status === "completed" && job.result) {
-      return jsonResponse({
-        transcript: job.result.text || "",
-        segments: job.result.json?.segments || [],
-        language: job.result.language || "auto",
-        duration: job.result.duration || 0,
-        source_type: sourceType,
-        note: `Transcribed via Groq Whisper (${job.result.chunks_processed || 1} chunk(s))`,
-      });
-    }
-
-    if (job.status === "error") {
-      throw new Error(job.error || "Transcription failed on server.");
-    }
-
-    // Wait 2 seconds before polling again
-    await new Promise((r) => setTimeout(r, 2000));
+async function handleStatus(jobId, env) {
+  if (!jobId) return jsonResponse({ error: "Missing job_id" }, 400);
+  if (!env.RENDER_URL) return jsonResponse({ error: "Transcription server is not configured." }, 500);
+  try {
+    const resp = await fetch(`${env.RENDER_URL}/api/status/${encodeURIComponent(jobId)}`);
+    const data = await resp.json().catch(() => ({ error: `Status check failed: HTTP ${resp.status}` }));
+    return jsonResponse(data, resp.status);
+  } catch (err) {
+    return jsonResponse({ error: `Status check failed: ${err.message}` }, 502);
   }
-
-  throw new Error("Transcription timed out. The file may be too large. Try a shorter video.");
 }
 
 // ── URL classification ───────────────────────────────────────

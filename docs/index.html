@@ -277,9 +277,15 @@
     let currentInputType = 'file'; // 'file' or 'url'
     let worker = null;
     let jobQueue = [];
-    let activeJobId = null;
+    const activeJobs = new Set(); // jobIds currently in-flight
+    const jobPollers = {}; // jobId -> setTimeout handle (URL-mode polling)
     let jobCounter = 0;
     const jobData = {};
+
+    // Concurrency caps. Browser mode shares one Web Worker so it must stay at 1.
+    const MAX_CONCURRENT_URL = 3;
+    const MAX_CONCURRENT_CLOUD = 2;
+    const MAX_CONCURRENT_BROWSER = 1;
 
     const GROQ_API = 'https://api.groq.com/openai/v1/audio/transcriptions';
     const WORKER_URL = '__WORKER_URL__';
@@ -288,6 +294,9 @@
 
     // ── Init ────────────────────────────────────────────────────
     (function init() {
+        // Cleanup: pre-Mar-25 builds stored the API key in localStorage; remove it.
+        try { localStorage.removeItem('thq_groq_key'); } catch {}
+
         // Load API key (injected by GitHub Actions from repo secret)
         const DEFAULT_KEY = '__GROQ_API_KEY__';
         const injectedKey = DEFAULT_KEY.startsWith('__') ? '' : DEFAULT_KEY;
@@ -422,19 +431,35 @@
         processNext();
     }
 
-    async function processNext() {
-        if (activeJobId || jobQueue.length === 0) return;
-        const jobId = jobQueue.shift();
-        activeJobId = jobId;
-        const job = jobData[jobId];
+    function countActiveByMode(mode) {
+        let n = 0;
+        for (const id of activeJobs) if (jobData[id] && jobData[id].mode === mode) n++;
+        return n;
+    }
 
-        if (job.mode === 'url') {
-            await processUrl(jobId, job);
-        } else if (job.mode === 'cloud') {
-            await processCloud(jobId, job);
-        } else {
-            await processBrowser(jobId, job);
+    function capForMode(mode) {
+        if (mode === 'url') return MAX_CONCURRENT_URL;
+        if (mode === 'cloud') return MAX_CONCURRENT_CLOUD;
+        return MAX_CONCURRENT_BROWSER;
+    }
+
+    function processNext() {
+        // Walk the queue and start every job whose mode still has capacity.
+        // Skipped jobs stay queued; they're picked up by the next processNext().
+        const remaining = [];
+        for (const jobId of jobQueue) {
+            const job = jobData[jobId];
+            if (!job) continue;
+            if (countActiveByMode(job.mode) < capForMode(job.mode)) {
+                activeJobs.add(jobId);
+                if (job.mode === 'url') processUrl(jobId, job);
+                else if (job.mode === 'cloud') processCloud(jobId, job);
+                else processBrowser(jobId, job);
+            } else {
+                remaining.push(jobId);
+            }
         }
+        jobQueue = remaining;
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -451,14 +476,12 @@
     async function processUrl(jobId, job) {
         const workerUrl = getWorkerUrl();
         if (!workerUrl) {
-            updateJobUI(jobId, 'error', 0, 'URL transcription is not configured. Contact the site admin.');
-            activeJobId = null;
-            processNext();
+            failJob(jobId, 'URL transcription is not configured. Contact the site admin.');
             return;
         }
 
         try {
-            updateJobUI(jobId, 'transcribing', 10, 'Sending URL to transcription service...');
+            updateJobUI(jobId, 'transcribing', 5, 'Sending URL to transcription service...');
 
             const headers = { 'Content-Type': 'application/json' };
             const wk = WORKER_KEY;
@@ -474,30 +497,99 @@
                 }),
             });
 
-            const data = await res.json();
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data.error || `Worker error: HTTP ${res.status}`);
 
-            if (!res.ok) {
-                throw new Error(data.error || `Worker error: HTTP ${res.status}`);
+            // Fast path: Worker returned a transcript directly (YouTube edge, Fathom API, direct file)
+            if (!data.polling && (data.transcript !== undefined || data.text !== undefined)) {
+                const text = data.transcript || data.text || '';
+                const segments = (data.segments || []).map((s, i) => ({
+                    index: i + 1, start: s.start ?? 0, end: s.end ?? 0, text: (s.text || '').trim(),
+                }));
+                const lang = data.language || 'auto';
+                completeJob(jobId, buildResultFromParts(text, segments, lang));
+                return;
             }
 
-            updateJobUI(jobId, 'transcribing', 95, 'Processing result...');
-
-            // Build result from worker response
-            const text = data.transcript || '';
-            const segments = (data.segments || []).map((s, i) => ({
-                index: i + 1, start: s.start ?? 0, end: s.end ?? 0, text: (s.text || '').trim(),
-            }));
-            const lang = data.language || 'auto';
-
-            completeJob(jobId, buildResultFromParts(text, segments, lang));
+            // Polling path: Worker handed us a job_id from Render; poll for status.
+            if (!data.job_id) throw new Error('Server did not return a job ID.');
+            job.remoteJobId = data.job_id;
+            updateJobUI(jobId, 'transcribing', 8, 'Job accepted, waiting for progress...');
+            pollUrlJob(jobId, workerUrl);
         } catch (err) {
             let msg = err.message;
-            if (msg.includes('Failed to fetch')) {
-                msg = 'Cannot reach transcription service. It may be temporarily unavailable.';
+            if (msg.includes('Failed to fetch')) msg = 'Cannot reach transcription service. It may be temporarily unavailable.';
+            failJob(jobId, msg);
+        }
+    }
+
+    function pollUrlJob(jobId, workerUrl) {
+        const job = jobData[jobId];
+        if (!job || !job.remoteJobId) return;
+        let consecutiveErrors = 0;
+        const MAX_ERRORS = 10;       // ~30s of failures before we give up
+        const POLL_INTERVAL = 3000;  // 3s
+
+        const tick = async () => {
+            if (!activeJobs.has(jobId)) return; // job was canceled / completed elsewhere
+            try {
+                const res = await fetch(`${workerUrl}/transcribe-status/${encodeURIComponent(job.remoteJobId)}`);
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) throw new Error(data.error || `Status HTTP ${res.status}`);
+
+                consecutiveErrors = 0;
+                const status = data.status || 'unknown';
+                const progress = typeof data.progress === 'number' ? data.progress : 0;
+                const detail = STATUS_LABELS[status] || `Status: ${status}`;
+
+                if (status === 'completed' && data.result) {
+                    const r = data.result;
+                    const text = r.text || '';
+                    const segments = (r.json?.segments || []).map((s, i) => ({
+                        index: i + 1, start: s.start ?? 0, end: s.end ?? 0, text: (s.text || '').trim(),
+                    }));
+                    completeJob(jobId, buildResultFromParts(text, segments, r.language || 'auto'));
+                    return;
+                }
+                if (status === 'error') {
+                    failJob(jobId, data.error || 'Transcription failed on server.');
+                    return;
+                }
+
+                updateJobUI(jobId, 'transcribing', Math.max(8, progress), detail);
+                jobPollers[jobId] = setTimeout(tick, POLL_INTERVAL);
+            } catch (err) {
+                consecutiveErrors++;
+                if (consecutiveErrors >= MAX_ERRORS) {
+                    failJob(jobId, `Lost contact with transcription service: ${err.message}`);
+                    return;
+                }
+                jobPollers[jobId] = setTimeout(tick, POLL_INTERVAL);
             }
-            updateJobUI(jobId, 'error', 0, msg);
-            activeJobId = null;
-            processNext();
+        };
+
+        jobPollers[jobId] = setTimeout(tick, POLL_INTERVAL);
+    }
+
+    const STATUS_LABELS = {
+        queued: 'Queued on server...',
+        downloading: 'Downloading source...',
+        transcribing: 'Transcribing...',
+        completed: 'Completed',
+        error: 'Error',
+    };
+
+    function failJob(jobId, msg) {
+        updateJobUI(jobId, 'error', 0, msg);
+        clearPoller(jobId);
+        activeJobs.delete(jobId);
+        processNext();
+    }
+
+    function clearPoller(jobId) {
+        if (jobPollers[jobId]) {
+            clearTimeout(jobPollers[jobId]);
+            delete jobPollers[jobId];
         }
     }
 
@@ -614,9 +706,7 @@
                 try {
                     chunks = await decodeAndChunkAudio(file, MAX_CHUNK_BYTES);
                 } catch (decodeErr) {
-                    updateJobUI(jobId, 'error', 0, decodeErr.message);
-                    activeJobId = null;
-                    processNext();
+                    failJob(jobId, decodeErr.message);
                     return;
                 }
 
@@ -653,9 +743,7 @@
                 completeJob(jobId, buildResultFromParts(fullText, allSegments, detectedLang));
             }
         } catch (err) {
-            updateJobUI(jobId, 'error', 0, `Groq API error: ${err.message}`);
-            activeJobId = null;
-            processNext();
+            failJob(jobId, `Groq API error: ${err.message}`);
         }
     }
 
@@ -727,10 +815,9 @@
             worker.onmessage = handleWorkerMessage;
             worker.onerror = (e) => {
                 console.error('Worker error:', e);
-                if (activeJobId) {
-                    updateJobUI(activeJobId, 'error', 0, `Worker error: ${e.message}`);
-                    activeJobId = null;
-                    processNext();
+                // Browser mode is gated to MAX_CONCURRENT_BROWSER=1, but iterate to be safe.
+                for (const id of [...activeJobs]) {
+                    if (jobData[id]?.mode === 'browser') failJob(id, `Worker error: ${e.message}`);
                 }
             };
         }
@@ -751,9 +838,7 @@
         } else if (msg.type === 'completed') {
             completeJob(jobId, msg.result);
         } else if (msg.type === 'error') {
-            updateJobUI(jobId, 'error', 0, msg.error);
-            activeJobId = null;
-            processNext();
+            failJob(jobId, msg.error);
         }
     }
 
@@ -776,9 +861,7 @@
                 jobId,
             }, [float32.buffer]);
         } catch (err) {
-            updateJobUI(jobId, 'error', 0, `Audio extraction failed: ${err.message}`);
-            activeJobId = null;
-            processNext();
+            failJob(jobId, `Audio extraction failed: ${err.message}`);
         }
     }
 
@@ -787,9 +870,12 @@
     // ═══════════════════════════════════════════════════════════
 
     function completeJob(jobId, result) {
-        activeJobId = null;
-        jobData[jobId].result = result;
-        delete jobData[jobId].file;
+        clearPoller(jobId);
+        activeJobs.delete(jobId);
+        if (jobData[jobId]) {
+            jobData[jobId].result = result;
+            delete jobData[jobId].file;
+        }
         moveToCompleted(jobId, result);
         processNext();
     }

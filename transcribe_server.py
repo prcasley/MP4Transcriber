@@ -1161,6 +1161,14 @@ def transcribe_url_job(job_id: str, url: str, groq_model: str, language: str | N
                     f"{s['text']}\n"
                 )
 
+            if not full_text and not all_segments:
+                job["status"] = "error"
+                job["error"] = (
+                    f"Transcription produced no content from {len(chunks)} chunk(s). "
+                    "The audio may be silent, unreadable, or the source URL did not return usable media."
+                )
+                return
+
             duration = all_segments[-1]["end"] if all_segments else 0
             json_result = {
                 "file": url,
