@@ -1059,6 +1059,40 @@ def groq_transcribe(audio_path: str, model: str = "whisper-large-v3-turbo",
     return resp.json()
 
 
+class _ProgressTicker:
+    """Daemon thread that gradually advances job['progress'] toward a target.
+    Stops automatically when the job's status changes from `expected_status`
+    or when `duration_seconds` elapses. Never moves progress backward."""
+
+    def __init__(self, job, target, duration_seconds, expected_status):
+        self.job = job
+        self.target = target
+        self.duration = duration_seconds
+        self.expected_status = expected_status
+
+    def start(self):
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def _run(self):
+        start_time = time.time()
+        start_progress = self.job.get("progress", 0)
+        span = max(0, self.target - start_progress)
+        if span == 0:
+            return
+        while True:
+            elapsed = time.time() - start_time
+            if elapsed >= self.duration:
+                return
+            if self.job.get("status") != self.expected_status:
+                return
+            ratio = min(1.0, elapsed / self.duration)
+            eased = 1 - (1 - ratio) ** 2  # ease-out quadratic
+            new_progress = start_progress + int(span * eased)
+            if new_progress > self.job.get("progress", 0):
+                self.job["progress"] = new_progress
+            time.sleep(1.5)
+
+
 def transcribe_url_job(job_id: str, url: str, groq_model: str, language: str | None):
     """Background thread: download audio from URL, transcribe via Groq."""
     job = jobs[job_id]
@@ -1070,6 +1104,9 @@ def transcribe_url_job(job_id: str, url: str, groq_model: str, language: str | N
             # ── Download phase ──
             job["status"] = "downloading"
             job["progress"] = 5
+            # yt-dlp/SharePoint downloads don't expose progress; tick visibly toward 28
+            # so the user sees movement during the multi-minute download phase.
+            _ProgressTicker(job, target=28, duration_seconds=180, expected_status="downloading").start()
 
             if source_type == "fathom":
                 result = download_from_fathom(url, tmp_dir)
@@ -1125,6 +1162,11 @@ def transcribe_url_job(job_id: str, url: str, groq_model: str, language: str | N
             job["status"] = "transcribing"
             job["progress"] = 30
             chunks = chunk_audio(audio_path, tmp_dir)
+            # Single-chunk Groq calls can finish in <3s and skip past the 30→95 range
+            # before the browser polls again. Tick toward 90 so the bar moves visibly.
+            # (Multi-chunk files already get per-chunk progress updates from the loop below.)
+            if len(chunks) == 1:
+                _ProgressTicker(job, target=90, duration_seconds=45, expected_status="transcribing").start()
 
             # ── Transcribe each chunk via Groq ──
             all_segments = []

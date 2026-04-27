@@ -514,7 +514,8 @@
             // Polling path: Worker handed us a job_id from Render; poll for status.
             if (!data.job_id) throw new Error('Server did not return a job ID.');
             job.remoteJobId = data.job_id;
-            updateJobUI(jobId, 'transcribing', 8, 'Job accepted, waiting for progress...');
+            job.startedAt = Date.now();
+            updateJobUI(jobId, 'transcribing', 5, 'Job accepted, waiting for progress...');
             pollUrlJob(jobId, workerUrl);
         } catch (err) {
             let msg = err.message;
@@ -523,12 +524,20 @@
         }
     }
 
+    function formatElapsed(startedAt) {
+        if (!startedAt) return '';
+        const sec = Math.floor((Date.now() - startedAt) / 1000);
+        const m = Math.floor(sec / 60);
+        const s = sec % 60;
+        return `${m}:${String(s).padStart(2, '0')}`;
+    }
+
     function pollUrlJob(jobId, workerUrl) {
         const job = jobData[jobId];
         if (!job || !job.remoteJobId) return;
         let consecutiveErrors = 0;
-        const MAX_ERRORS = 10;       // ~30s of failures before we give up
-        const POLL_INTERVAL = 3000;  // 3s
+        const MAX_ERRORS = 15;       // ~30s of failures before we give up
+        const POLL_INTERVAL = 2000;  // 2s
 
         const tick = async () => {
             if (!activeJobs.has(jobId)) return; // job was canceled / completed elsewhere
@@ -540,7 +549,9 @@
                 consecutiveErrors = 0;
                 const status = data.status || 'unknown';
                 const progress = typeof data.progress === 'number' ? data.progress : 0;
-                const detail = STATUS_LABELS[status] || `Status: ${status}`;
+                const baseLabel = STATUS_LABELS[status] || `Status: ${status}`;
+                const elapsed = formatElapsed(job.startedAt);
+                const detail = elapsed ? `${baseLabel} · ${elapsed}` : baseLabel;
 
                 if (status === 'completed' && data.result) {
                     const r = data.result;
@@ -556,7 +567,7 @@
                     return;
                 }
 
-                updateJobUI(jobId, 'transcribing', Math.max(8, progress), detail);
+                updateJobUI(jobId, 'transcribing', progress, detail);
                 jobPollers[jobId] = setTimeout(tick, POLL_INTERVAL);
             } catch (err) {
                 consecutiveErrors++;
