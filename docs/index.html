@@ -283,7 +283,7 @@
     const jobData = {};
 
     // Concurrency caps. Browser mode shares one Web Worker so it must stay at 1.
-    const MAX_CONCURRENT_URL = 3;
+    const MAX_CONCURRENT_URL = 1; // Render free tier can't handle concurrent yt-dlp downloads; serialize.
     const MAX_CONCURRENT_CLOUD = 2;
     const MAX_CONCURRENT_BROWSER = 1;
 
