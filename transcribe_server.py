@@ -889,19 +889,39 @@ def download_with_ytdlp(url: str, tmp_dir: str) -> str:
 
 
 def download_from_fathom(url: str, tmp_dir: str) -> dict:
-    """Handle Fathom URLs — try API first, then fall back to yt-dlp."""
+    """Handle Fathom URLs — try API first (paginated), then fall back to yt-dlp.
+
+    Note: the Fathom API only returns meetings owned by the API-key user. If a
+    recording was shared with you but isn't yours, the API won't have it and we
+    must fall through to yt-dlp.
+    """
     if FATHOM_API_KEY:
-        recording_id = url.rstrip("/").split("/")[-1]
+        recording_id = url.rstrip("/").split("/")[-1].lower()
         try:
-            resp = http_requests.get(
-                "https://api.fathom.ai/external/v1/meetings",
-                headers={"X-Api-Key": FATHOM_API_KEY},
-                params={"include_transcript": "true"},
-                timeout=30,
-            )
-            if resp.status_code == 200:
-                for meeting in resp.json().get("items", []):
-                    if recording_id in meeting.get("url", "") or recording_id in meeting.get("share_url", ""):
+            cursor = None
+            for _page in range(20):  # cap at 20 pages (~500–1000 meetings depending on page size)
+                params = {"include_transcript": "true"}
+                if cursor:
+                    params["cursor"] = cursor
+                resp = http_requests.get(
+                    "https://api.fathom.ai/external/v1/meetings",
+                    headers={"X-Api-Key": FATHOM_API_KEY},
+                    params=params,
+                    timeout=30,
+                )
+                if resp.status_code != 200:
+                    print(f"[TranscribeHQ] Fathom API returned {resp.status_code}, falling back")
+                    break
+                data = resp.json()
+                for meeting in data.get("items", []) or data.get("meetings", []):
+                    candidate_fields = [
+                        meeting.get("url", ""),
+                        meeting.get("share_url", ""),
+                        meeting.get("short_url", ""),
+                        meeting.get("recording_url", ""),
+                        str(meeting.get("id", "")),
+                    ]
+                    if any(recording_id in (f or "").lower() for f in candidate_fields):
                         parts = []
                         for seg in meeting.get("transcript", []):
                             speaker = seg.get("speaker", {}).get("display_name", "Unknown")
@@ -913,6 +933,16 @@ def download_from_fathom(url: str, tmp_dir: str) -> dict:
                             "transcript": "\n".join(parts),
                             "title": meeting.get("title", "Fathom Meeting"),
                         }
+                cursor = (
+                    data.get("next_cursor")
+                    or data.get("cursor")
+                    or (data.get("meta") or {}).get("next_cursor")
+                    or (data.get("pagination") or {}).get("next_cursor")
+                )
+                if not cursor:
+                    break
+            else:
+                print("[TranscribeHQ] Fathom API hit 20-page cap without match, falling back")
         except Exception as e:
             print(f"[TranscribeHQ] Fathom API failed, falling back: {e}")
 

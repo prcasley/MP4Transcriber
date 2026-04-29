@@ -189,20 +189,32 @@ function classifyUrl(url) {
 // ── Fathom API ───────────────────────────────────────────────
 
 async function tryFathomApi(url, apiKey) {
-  const recordingId = url.replace(/\/+$/, "").split("/").pop();
+  // Paginate through the Fathom API until we find the matching meeting or run out of pages.
+  // First-page-only matching used to silently miss older meetings, forcing a slow yt-dlp download.
+  const recordingId = url.replace(/\/+$/, "").split("/").pop().toLowerCase();
   try {
-    const resp = await fetch("https://api.fathom.ai/external/v1/meetings?include_transcript=true", { headers: { "X-Api-Key": apiKey } });
-    if (!resp.ok) return null;
-    const data = await resp.json();
-    for (const meeting of (data.items || data.meetings || [])) {
-      const fields = [meeting.url, meeting.share_url, meeting.id, meeting.short_url, meeting.recording_url].filter(Boolean).map((s) => s.toLowerCase());
-      if (fields.some((f) => f.includes(recordingId.toLowerCase()))) {
-        const parts = (meeting.transcript || []).map((seg) => {
-          const speaker = seg.speaker?.display_name || seg.speaker_name || "Speaker";
-          return `[${seg.timestamp || seg.start_time || ""}] ${speaker}: ${seg.text || ""}`;
-        });
-        return { transcript: parts.join("\n") || meeting.summary || "No transcript content", title: meeting.title || "Fathom Meeting" };
+    let cursor = null;
+    for (let page = 0; page < 20; page++) {
+      const u = new URL("https://api.fathom.ai/external/v1/meetings");
+      u.searchParams.set("include_transcript", "true");
+      if (cursor) u.searchParams.set("cursor", cursor);
+      const resp = await fetch(u.toString(), { headers: { "X-Api-Key": apiKey } });
+      if (!resp.ok) return null;
+      const data = await resp.json();
+      const items = data.items || data.meetings || [];
+      for (const meeting of items) {
+        const fields = [meeting.url, meeting.share_url, meeting.id, meeting.short_url, meeting.recording_url]
+          .filter(Boolean).map((s) => String(s).toLowerCase());
+        if (fields.some((f) => f.includes(recordingId))) {
+          const parts = (meeting.transcript || []).map((seg) => {
+            const speaker = seg.speaker?.display_name || seg.speaker_name || "Speaker";
+            return `[${seg.timestamp || seg.start_time || ""}] ${speaker}: ${seg.text || ""}`;
+          });
+          return { transcript: parts.join("\n") || meeting.summary || "No transcript content", title: meeting.title || "Fathom Meeting" };
+        }
       }
+      cursor = data.next_cursor || data.cursor || data.meta?.next_cursor || data.pagination?.next_cursor || null;
+      if (!cursor) return null;
     }
   } catch (err) { console.error("Fathom API error:", err.message); }
   return null;
