@@ -291,16 +291,15 @@
     const WORKER_URL = '__WORKER_URL__';
     const WORKER_KEY = '__WORKER_KEY__';
     const MAX_CHUNK_BYTES = 24 * 1024 * 1024; // 24MB to stay under Groq's 25MB limit
+    // Build-time base64-encoded Groq key. Decoded only when needed; never written
+    // to the DOM. This is obfuscation (defeats grep + casual View-Source), not
+    // encryption — anyone running DevTools can still recover the plaintext.
+    const _GROQ_KEY_B64 = '__GROQ_API_KEY_B64__';
 
     // ── Init ────────────────────────────────────────────────────
     (function init() {
         // Cleanup: pre-Mar-25 builds stored the API key in localStorage; remove it.
         try { localStorage.removeItem('thq_groq_key'); } catch {}
-
-        // Load API key (injected by GitHub Actions from repo secret)
-        const DEFAULT_KEY = '__GROQ_API_KEY__';
-        const injectedKey = DEFAULT_KEY.startsWith('__') ? '' : DEFAULT_KEY;
-        document.getElementById('api-key-input').value = injectedKey;
 
         // Load saved mode
         const savedMode = localStorage.getItem('thq_mode') || 'cloud';
@@ -308,7 +307,11 @@
     })();
 
     function getApiKey() {
-        return (document.getElementById('api-key-input').value || '').trim();
+        // Manual override (DevTools / power users) wins over the injected key.
+        const manual = (document.getElementById('api-key-input').value || '').trim();
+        if (manual) return manual;
+        if (_GROQ_KEY_B64.startsWith('__')) return ''; // placeholder unreplaced (local dev)
+        try { return atob(_GROQ_KEY_B64); } catch { return ''; }
     }
 
     // ── Input type toggle (File vs URL) ─────────────────────────

@@ -25,7 +25,11 @@ jobs:
 
       - name: Inject secrets
         run: |
-          sed -i "s|__GROQ_API_KEY__|${GROQ_API_KEY}|g" docs/index.html
+          # Base64-encode the Groq key so View-Source / regex scrapers don't see "gsk_*"
+          # in the HTML. This is obfuscation, not encryption — anyone with DevTools can
+          # still call atob() on it. But it stops casual scraping and bot harvesters.
+          GROQ_API_KEY_B64=$(printf '%s' "${GROQ_API_KEY}" | base64 -w0)
+          sed -i "s|__GROQ_API_KEY_B64__|${GROQ_API_KEY_B64}|g" docs/index.html
           sed -i "s|__WORKER_URL__|${WORKER_URL}|g" docs/index.html
           sed -i "s|__WORKER_KEY__|${WORKER_KEY}|g" docs/index.html
         env:
