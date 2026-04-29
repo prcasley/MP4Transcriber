@@ -781,7 +781,7 @@ def download_with_ytdlp(url: str, tmp_dir: str) -> str:
     base_cmd = [
         "yt-dlp", "--no-playlist",
         "-x", "--audio-format", "mp3", "--audio-quality", "5",
-        "--max-filesize", "500m",
+        "--max-filesize", "2g",
         "-o", output_template,
         "--no-warnings", "--quiet",
     ]
@@ -790,18 +790,28 @@ def download_with_ytdlp(url: str, tmp_dir: str) -> str:
     if is_youtube:
         base_cmd += ["--extractor-args", "youtube:player_client=android,web,web_creator"]
 
-    # Try format selectors in order — different videos expose different formats
+    # Try format selectors in order. `worstaudio` is tried first because Whisper
+    # transcribes the same regardless of source quality, and a low-bitrate stream
+    # is 5–10× smaller — critical for long videos on Render's slow free-tier
+    # bandwidth where `bestaudio` can take 20+ minutes for a multi-hour file.
     format_attempts = [
+        ["--format", "worstaudio/worst"],
         ["--format", "bestaudio/best"],
         ["--format", "best"],
         ["--format", "bv*+ba/b"],
         [],  # let yt-dlp pick
     ]
 
+    DOWNLOAD_TIMEOUT = 1800  # 30 min — long enough for multi-hour videos
+
     errors = []
     for attempt_num, fmt in enumerate(format_attempts, start=1):
         cmd = base_cmd + fmt + [url]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=DOWNLOAD_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            errors.append(f"Attempt {attempt_num} ({' '.join(fmt) or 'default'}): timed out after {DOWNLOAD_TIMEOUT}s")
+            continue
         if result.returncode == 0:
             for f in Path(tmp_dir).iterdir():
                 if f.suffix in [".mp3", ".m4a", ".wav", ".ogg", ".webm", ".opus", ".flac"]:
@@ -819,15 +829,19 @@ def download_with_ytdlp(url: str, tmp_dir: str) -> str:
         )
 
     # Final fallback: plain media download, then extract audio with ffmpeg
-    plain_cmd = ["yt-dlp", "--no-playlist", "--max-filesize", "500m", "-o", output_template]
+    plain_cmd = ["yt-dlp", "--no-playlist", "--max-filesize", "2g", "-o", output_template]
     if YOUTUBE_COOKIES_PATH:
         plain_cmd += ["--cookies", YOUTUBE_COOKIES_PATH]
     if is_youtube:
         plain_cmd += ["--extractor-args", "youtube:player_client=android,web,web_creator,tv_embedded"]
     plain_cmd += [url]
 
-    plain_result = subprocess.run(plain_cmd, capture_output=True, text=True, timeout=600)
-    if plain_result.returncode == 0:
+    try:
+        plain_result = subprocess.run(plain_cmd, capture_output=True, text=True, timeout=DOWNLOAD_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        errors.append(f"Plain download fallback timed out after {DOWNLOAD_TIMEOUT}s")
+        plain_result = None
+    if plain_result is not None and plain_result.returncode == 0:
         downloaded_media = None
         for f in Path(tmp_dir).iterdir():
             if f.suffix.lower() not in [".part", ".ytdl"]:
@@ -850,7 +864,7 @@ def download_with_ytdlp(url: str, tmp_dir: str) -> str:
             )
         else:
             errors.append("Plain download succeeded but no media file was found")
-    else:
+    elif plain_result is not None:
         errors.append(
             "Plain download fallback failed:\n"
             + ((plain_result.stderr or plain_result.stdout or "").strip()[:1200])
@@ -1034,7 +1048,7 @@ def chunk_audio(file_path: str, tmp_dir: str, chunk_mb: int = 20) -> list[str]:
             "-ss", str(start), "-t", str(chunk_duration),
             "-vn", "-acodec", "libmp3lame", "-q:a", "5",
             chunk_path
-        ], capture_output=True, timeout=120)
+        ], capture_output=True, timeout=600)
         if os.path.exists(chunk_path) and os.path.getsize(chunk_path) > 0:
             chunks.append(chunk_path)
     return chunks
